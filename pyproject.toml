@@ -4,17 +4,19 @@ version = "0.1.0"
 description = "Universal release orchestration"
 readme = "README.md"
 authors = [
-    { name = "ata-sesli", email = "atasesli@protonmail.com" }
+    { name = "Ata Sesli" }
 ]
 requires-python = ">=3.14"
 dependencies = [
     "click>=8.5.0",
     "pydantic>=2.13.5",
-    "pytest>=9.1.1",
-    "pytest-asyncio>=1.4.0",
     "pyyaml>=6.0.3",
     "rich>=15.0.0",
 ]
+[project.urls]
+Homepage = "https://github.com/0ctacity/omniship"
+Repository = "https://github.com/0ctacity/omniship"
+Issues = "https://github.com/0ctacity/omniship/issues"
 
 [project.scripts]
 omniship = "omniship.cli.app:cli"
@@ -26,3 +28,9 @@ github = "omniship.operations.github:register_github_plugin"
 [build-system]
 requires = ["uv_build>=0.12.9,<0.13.0"]
 build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+    "pytest-asyncio>=1.4.0",
+]
