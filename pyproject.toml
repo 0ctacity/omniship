@@ -1,7 +1,7 @@
 [project]
 name = "omniship"
 version = "0.1.0"
-description = "Add your description here"
+description = "Universal release orchestration"
 readme = "README.md"
 authors = [
     { name = "ata-sesli", email = "atasesli@protonmail.com" }
