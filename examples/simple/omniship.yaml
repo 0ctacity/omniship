@@ -1,0 +1,21 @@
+version: 1
+
+check:
+  lint:
+    uses: core/command
+    with:
+      run: echo "Linting code..."
+
+build:
+  package:
+    uses: core/command
+    with:
+      run: echo "Building package..." && mkdir -p dist && echo "app v0.1" > dist/app.tar.gz
+      artifacts:
+        - dist/app.tar.gz
+
+ship:
+  release:
+    uses: core/command
+    with:
+      run: echo "Shipped package!"

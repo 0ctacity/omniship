@@ -1,0 +1,42 @@
+version: 1
+
+check:
+  prepare:
+    uses: core/command
+    with:
+      run: echo "Preparing test suite..."
+
+  test-a:
+    uses: core/command
+    needs: [prepare]
+    with:
+      run: echo "Executing test suite A..."
+
+  test-b:
+    uses: core/command
+    needs: [prepare]
+    with:
+      run: echo "Executing test suite B..."
+
+build:
+  linux:
+    uses: core/command
+    with:
+      run: mkdir -p dist/linux && echo "elf-binary" > dist/linux/app
+      artifacts:
+        - dist/linux/app
+
+  macos:
+    uses: core/command
+    with:
+      run: mkdir -p dist/macos && echo "macho-binary" > dist/macos/app
+      artifacts:
+        - dist/macos/app
+
+ship:
+  github:
+    uses: github/release
+    with:
+      repository: octacity/example
+      tag: v0.1.0
+      dry_run: true

@@ -1,0 +1,43 @@
+version: 1
+
+check:
+  compile:
+    uses: core/command
+    with:
+      run: echo "Compiling..."
+
+  unit:
+    uses: core/command
+    needs: [compile]
+    with:
+      run: echo "Running unit tests in parallel..."
+
+  integration:
+    uses: core/command
+    needs: [compile]
+    with:
+      run: echo "Running integration tests in parallel..."
+
+  lint:
+    uses: core/command
+    needs: [compile]
+    with:
+      run: echo "Running lint in parallel..."
+
+  summary:
+    uses: core/command
+    needs: [unit, integration, lint]
+    with:
+      run: echo "All parallel checks passed!"
+
+build:
+  binary:
+    uses: core/command
+    with:
+      run: mkdir -p dist && echo "binary executable" > dist/binary
+      artifacts:
+        - dist/binary
+
+ship:
+  done:
+    uses: core/noop
