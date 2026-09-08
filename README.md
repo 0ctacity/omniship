@@ -1,7 +1,5 @@
 # OmniShip (v0.1)
 
-> **Prove that Check → Build → Ship works as three composable DAGs, with plugins and artifacts flowing between them.**
-
 OmniShip is a plugin-driven DAG executor designed around three strict stage boundaries:
 `Check` → `Build` → `Ship`.
 
