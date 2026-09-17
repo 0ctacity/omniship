@@ -1,0 +1,204 @@
+import asyncio
+import os
+import sys
+import time
+
+from pydantic import BaseModel, Field, model_validator
+
+from omniship.core.artifact import Artifact
+from omniship.core.context import ExecutionContext
+from omniship.core.node import NodeInputs
+from omniship.core.result import NodeResult, NodeStatus
+from omniship.core.stage import Stage
+from omniship.plugins.metadata import OperationDefinition
+
+
+class RuffConfig(BaseModel):
+    fix: bool = False
+
+
+class PytestConfig(BaseModel):
+    coverage: bool = False
+    minimum_coverage: int | None = Field(default=None, ge=0, le=100)
+
+    @model_validator(mode="after")
+    def validate_coverage(self):
+        if self.minimum_coverage is not None and not self.coverage:
+            raise ValueError("minimum_coverage requires coverage=true")
+        return self
+
+
+class WheelConfig(BaseModel):
+    verify: bool = True
+    output: str = "dist"
+
+
+async def _execute_tool(
+    context: ExecutionContext,
+    arguments: list[str],
+) -> tuple[int, str, str]:
+    process = await asyncio.create_subprocess_exec(
+        *arguments,
+        cwd=context.workspace_root,
+        env={**os.environ, **context.env},
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    stdout_bytes, stderr_bytes = await process.communicate()
+    return (
+        process.returncode or 0,
+        stdout_bytes.decode("utf-8", errors="replace"),
+        stderr_bytes.decode("utf-8", errors="replace"),
+    )
+
+
+class RuffOperation:
+    name = "python/ruff"
+    stages = frozenset({Stage.CHECK})
+    cacheable = False
+
+    async def execute(self, context: ExecutionContext, inputs: NodeInputs) -> NodeResult:
+        started = time.monotonic()
+        try:
+            config = RuffConfig.model_validate(inputs.params)
+        except Exception as exc:
+            return _invalid(started, exc)
+        arguments = ["ruff", "check", "."]
+        if config.fix:
+            arguments.append("--fix")
+        return await _command_result(context, arguments, started)
+
+
+class PytestOperation:
+    name = "python/pytest"
+    stages = frozenset({Stage.CHECK})
+    cacheable = False
+
+    async def execute(self, context: ExecutionContext, inputs: NodeInputs) -> NodeResult:
+        started = time.monotonic()
+        try:
+            config = PytestConfig.model_validate(inputs.params)
+        except Exception as exc:
+            return _invalid(started, exc)
+        arguments = [sys.executable, "-m", "pytest"]
+        if config.coverage:
+            arguments.append("--cov=.")
+        if config.minimum_coverage is not None:
+            arguments.append(f"--cov-fail-under={config.minimum_coverage}")
+        return await _command_result(context, arguments, started)
+
+
+class WheelOperation:
+    name = "python/wheel"
+    stages = frozenset({Stage.BUILD})
+    cacheable = False
+
+    async def execute(self, context: ExecutionContext, inputs: NodeInputs) -> NodeResult:
+        started = time.monotonic()
+        try:
+            config = WheelConfig.model_validate(inputs.params)
+        except Exception as exc:
+            return _invalid(started, exc)
+        output = (context.workspace_root / config.output).resolve()
+        if not output.is_relative_to(context.workspace_root.resolve()):
+            return NodeResult(
+                status=NodeStatus.FAILED,
+                duration=time.monotonic() - started,
+                error_message="Wheel output path escapes workspace",
+            )
+        before = set(output.glob("*.whl")) if output.exists() else set()
+        arguments = [
+            sys.executable,
+            "-m",
+            "build",
+            "--wheel",
+            "--outdir",
+            str(output),
+        ]
+        try:
+            return_code, stdout, stderr = await _execute_tool(context, arguments)
+        except Exception as exc:
+            return NodeResult(
+                status=NodeStatus.FAILED,
+                duration=time.monotonic() - started,
+                error_message=str(exc),
+            )
+        if return_code != 0:
+            return NodeResult(
+                status=NodeStatus.FAILED,
+                duration=time.monotonic() - started,
+                stdout=stdout,
+                stderr=stderr,
+                error_message=f"Python wheel build failed with exit code {return_code}",
+            )
+        wheels = sorted(set(output.glob("*.whl")) - before)
+        if config.verify and not wheels:
+            return NodeResult(
+                status=NodeStatus.FAILED,
+                duration=time.monotonic() - started,
+                stdout=stdout,
+                stderr=stderr,
+                error_message="Wheel build produced no new .whl files",
+            )
+        return NodeResult(
+            status=NodeStatus.SUCCESS,
+            duration=time.monotonic() - started,
+            stdout=stdout,
+            stderr=stderr,
+            artifacts=tuple(Artifact.from_path(path) for path in wheels),
+        )
+
+
+def _invalid(started: float, exc: Exception) -> NodeResult:
+    return NodeResult(
+        status=NodeStatus.FAILED,
+        duration=time.monotonic() - started,
+        error_message=f"Invalid Python operation configuration: {exc}",
+    )
+
+
+async def _command_result(
+    context: ExecutionContext,
+    arguments: list[str],
+    started: float,
+) -> NodeResult:
+    try:
+        return_code, stdout, stderr = await _execute_tool(context, arguments)
+    except Exception as exc:
+        return NodeResult(
+            status=NodeStatus.FAILED,
+            duration=time.monotonic() - started,
+            error_message=str(exc),
+        )
+    return NodeResult(
+        status=NodeStatus.SUCCESS if return_code == 0 else NodeStatus.FAILED,
+        duration=time.monotonic() - started,
+        stdout=stdout,
+        stderr=stderr,
+        error_message=(
+            None if return_code == 0 else f"Tool failed with exit code {return_code}"
+        ),
+    )
+
+
+def get_python_definitions() -> tuple[OperationDefinition, ...]:
+    return (
+        OperationDefinition(
+            name="python/ruff",
+            stages=RuffOperation.stages,
+            description="Lint a Python project with Ruff",
+            config_model=RuffConfig,
+        ),
+        OperationDefinition(
+            name="python/pytest",
+            stages=PytestOperation.stages,
+            description="Test a Python project with pytest",
+            config_model=PytestConfig,
+        ),
+        OperationDefinition(
+            name="python/wheel",
+            stages=WheelOperation.stages,
+            description="Build Python wheel artifacts",
+            config_model=WheelConfig,
+        ),
+    )

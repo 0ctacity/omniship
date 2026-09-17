@@ -2,6 +2,7 @@ import click
 
 from omniship.cli.build import build_cmd
 from omniship.cli.check import check_cmd
+from omniship.cli.generate import generate_cmd
 from omniship.cli.plan import plan_cmd
 from omniship.cli.plugins import plugin_cmd, plugins_cmd
 from omniship.cli.ship import ship_cmd
@@ -19,6 +20,7 @@ cli.add_command(ship_cmd, name="ship")
 cli.add_command(plan_cmd, name="plan")
 cli.add_command(plugins_cmd, name="plugins")
 cli.add_command(plugin_cmd, name="plugin")
+cli.add_command(generate_cmd, name="generate")
 
 
 def main() -> None:

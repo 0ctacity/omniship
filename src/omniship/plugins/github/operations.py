@@ -20,6 +20,10 @@ class GithubReleaseConfig(BaseModel):
     tag: str = Field(..., description="Git release tag name, e.g. 'v1.0.0'")
     title: str | None = Field(default=None, description="Release title")
     body: str | None = Field(default=None, description="Release notes / description")
+    generate_notes: bool = Field(
+        default=False,
+        description="Ask GitHub to generate release notes",
+    )
     draft: bool = Field(default=False, description="Whether to create as draft")
     prerelease: bool = Field(default=False, description="Whether this is a prerelease")
     files: list[str] = Field(
@@ -112,6 +116,7 @@ class GithubReleaseOperation:
                 "tag_name": cfg.tag,
                 "name": cfg.title or cfg.tag,
                 "body": cfg.body or "",
+                "generate_release_notes": cfg.generate_notes,
                 "draft": cfg.draft,
                 "prerelease": cfg.prerelease,
             }).encode("utf-8")

@@ -9,6 +9,10 @@ def test_plugin_registry_and_discovery():
     reg = load_plugins()
     assert reg.has_operation("core/command")
     assert reg.has_operation("core/noop")
+    assert reg.has_operation("core/python")
+    assert reg.has_operation("python/ruff")
+    assert reg.has_operation("python/pytest")
+    assert reg.has_operation("python/wheel")
     assert reg.has_operation("github/release")
 
     op = reg.get_operation("core/command")

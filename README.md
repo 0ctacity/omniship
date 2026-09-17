@@ -3,6 +3,10 @@
 OmniShip is a plugin-driven DAG executor designed around three strict stage boundaries:
 `Check` → `Build` → `Ship`.
 
+Pipelines can be authored directly as YAML or generated from Python. Python
+workflows combine recipes, typed blocks, and imperative tasks while compiling
+to the same validated YAML and execution engine.
+
 ---
 
 ## Architecture
@@ -27,7 +31,9 @@ OmniShip is a plugin-driven DAG executor designed around three strict stage boun
 4. **Plugin Architecture**:
    - Standard Python package entry-point discovery: `omniship.plugins`.
    - First-party operations use the exact same registration protocol as third-party plugins.
-   - Built-ins: `core/command`, `core/noop`, `github/release`.
+   - Core operations: `core/command`, `core/noop`, `core/python`.
+   - Bundled official providers: Python (`python/ruff`, `python/pytest`,
+     `python/wheel`) and GitHub (`github/release`).
 
 ---
 
@@ -105,3 +111,72 @@ omniship plugins
 omniship plugin show core/command
 omniship plugin template core/command
 ```
+
+---
+
+## Python Workflows
+
+Create `workflow.py` in a project and choose the level of control you need.
+
+### Recipe
+
+```python
+from omniship.recipes import PythonRelease
+
+pipeline = PythonRelease(repository="owner/project")
+```
+
+### Typed blocks
+
+```python
+from omniship import Build, Check, Pipeline, Ship
+from omniship.plugins.github import GitHubRelease
+from omniship.plugins.python import Pytest, Ruff, Wheel
+
+pipeline = Pipeline(
+    Check(Ruff(), Pytest()),
+    Build(Wheel()),
+    Ship(GitHubRelease(repository="owner/project", tag="v1.0.0")),
+)
+```
+
+### Imperative tasks
+
+Use ordinary Python when a release needs custom logic. Each decorated function
+is one DAG node and runs only when the generated pipeline is executed.
+
+```python
+from omniship import Pipeline
+from omniship.plugins.github import GitHubRelease
+from omniship.plugins.python import Python
+
+pipeline = Pipeline()
+
+
+@pipeline.build
+def package(ctx):
+    python = Python(ctx)
+    version = python.project.version()
+    wheel = python.build_wheel()
+    if version not in wheel.name:
+        ctx.fail(f"Unexpected wheel name: {wheel.name}")
+    ctx.artifacts.add(wheel)
+
+
+pipeline.ship(GitHubRelease(repository="owner/project"))
+```
+
+Generate and inspect the YAML before execution:
+
+```bash
+omniship generate
+omniship plan
+omniship ship
+```
+
+Use `omniship generate --check` in CI to verify that committed YAML matches
+`workflow.py`. Generation refuses to overwrite hand-authored YAML unless
+`--force` is supplied.
+
+Workflow files are trusted Python code. Generating a workflow imports it;
+executing `core/python` nodes imports it again to call the declared task.
