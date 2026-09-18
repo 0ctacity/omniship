@@ -1,9 +1,13 @@
-from io import StringIO
+from io import BytesIO, StringIO, TextIOWrapper
+from pathlib import Path
 
 from rich.console import Console
 
 from omniship.cli.ui import TerminalUI
+from omniship.core.artifact import Artifact
 from omniship.core.logging import Logging, LogLevel, LogRecord
+from omniship.core.node import Node
+from omniship.core.result import NodeResult, NodeStatus
 from omniship.core.stage import Stage
 
 
@@ -31,3 +35,40 @@ def test_terminal_ui_renders_github_warning_annotations(
     ui.emit(LogRecord(Stage.BUILD, "package", LogLevel.WARNING, "Check output"))
 
     assert "::warning title=Build · Package::Check output" in output.getvalue()
+
+
+def test_terminal_ui_uses_safe_symbols_for_legacy_windows_encoding(
+    tmp_path: Path,
+) -> None:
+    raw_output = BytesIO()
+    output = TextIOWrapper(raw_output, encoding="cp1252", errors="strict")
+    ui = TerminalUI(console=Console(file=output, force_terminal=False))
+    node = Node("pytest", Stage.CHECK, "python/pytest")
+    artifact_path = tmp_path / "package.whl"
+    artifact_path.write_bytes(b"wheel")
+
+    ui.on_node_start(Stage.CHECK, node)
+    ui.on_node_finish(
+        Stage.CHECK,
+        node,
+        NodeResult(NodeStatus.SUCCESS, duration=0.1),
+    )
+    ui.on_node_finish(
+        Stage.CHECK,
+        node,
+        NodeResult(NodeStatus.SKIPPED, error_message="dependency failed"),
+    )
+    ui.on_node_finish(
+        Stage.CHECK,
+        node,
+        NodeResult(NodeStatus.FAILED, duration=0.1),
+    )
+    ui.print_artifacts([Artifact.from_path(artifact_path)])
+    output.flush()
+
+    rendered = raw_output.getvalue().decode("cp1252")
+    assert "> Starting pytest" in rendered
+    assert "+ pytest" in rendered
+    assert "- pytest" in rendered
+    assert "x pytest" in rendered
+    assert "* package.whl" in rendered

@@ -30,6 +30,7 @@ class TerminalUI:
         self._stage_failed = False
         self._printed_stages: set[Stage] = set()
         self._streamed_lines: dict[tuple[Stage, str], list[str]] = {}
+        self._unicode_symbols = self._supports_unicode_symbols()
 
     def on_stage_start(self, stage: Stage, graph: StageGraph) -> None:
         self._current_stage = stage
@@ -39,7 +40,10 @@ class TerminalUI:
             self.console.print("  [dim](no nodes defined)[/dim]")
 
     def on_node_start(self, stage: Stage, node: Node) -> None:
-        self.console.print(f"  [cyan]→[/cyan] Starting [bold]{node.id}[/bold]")
+        symbol = self._symbol("→", ">")
+        self.console.print(
+            f"  [cyan]{symbol}[/cyan] Starting [bold]{node.id}[/bold]"
+        )
 
     def emit(self, record: LogRecord) -> None:
         self._streamed_lines.setdefault((record.stage, record.task), []).append(
@@ -85,18 +89,24 @@ class TerminalUI:
     def on_node_finish(self, stage: Stage, node: Node, result: NodeResult) -> None:
         if result.status == NodeStatus.SUCCESS:
             dur = f"{result.duration:.2f}s"
+            symbol = self._symbol("✓", "+")
             self.console.print(
-                f"  [green]✓[/green] [bold]{node.id:<24}[/bold] [dim]{dur:>8}[/dim]"
+                f"  [green]{symbol}[/green] [bold]{node.id:<24}[/bold] "
+                f"[dim]{dur:>8}[/dim]"
             )
         elif result.status == NodeStatus.SKIPPED:
             reason = result.error_message or "skipped"
+            symbol = self._symbol("⊘", "-")
             self.console.print(
-                f"  [yellow]⊘[/yellow] [bold]{node.id:<24}[/bold] [yellow]{reason}[/yellow]"
+                f"  [yellow]{symbol}[/yellow] [bold]{node.id:<24}[/bold] "
+                f"[yellow]{reason}[/yellow]"
             )
         elif result.status == NodeStatus.FAILED:
             dur = f"{result.duration:.2f}s"
+            symbol = self._symbol("✗", "x")
             self.console.print(
-                f"  [red]✗[/red] [bold]{node.id:<24}[/bold] [red]{dur:>8}[/red]"
+                f"  [red]{symbol}[/red] [bold]{node.id:<24}[/bold] "
+                f"[red]{dur:>8}[/red]"
             )
             if result.error_message:
                 self.console.print(f"    [red]Error:[/red] {result.error_message}")
@@ -164,11 +174,23 @@ class TerminalUI:
     def _escape_workflow_property(cls, value: str) -> str:
         return cls._escape_workflow_data(value).replace(":", "%3A").replace(",", "%2C")
 
+    def _supports_unicode_symbols(self) -> bool:
+        encoding = self.console.encoding or "utf-8"
+        try:
+            "→✓⊘✗•".encode(encoding)
+        except (LookupError, UnicodeEncodeError):
+            return False
+        return True
+
+    def _symbol(self, unicode_symbol: str, ascii_symbol: str) -> str:
+        return unicode_symbol if self._unicode_symbols else ascii_symbol
+
     def print_artifacts(self, artifacts: list) -> None:
         if artifacts:
             self.console.print()
             self.console.print("[bold]Artifacts[/bold]")
             for art in artifacts:
+                symbol = self._symbol("•", "*")
                 self.console.print(
-                    f"  [green]•[/green] {art.name} [dim]({art.path})[/dim]"
+                    f"  [green]{symbol}[/green] {art.name} [dim]({art.path})[/dim]"
                 )
