@@ -1,5 +1,6 @@
 import sys
 from pathlib import Path
+
 import click
 from rich.console import Console
 from rich.tree import Tree

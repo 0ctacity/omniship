@@ -1,8 +1,7 @@
 import asyncio
 import os
 import subprocess
-import time
-from typing import Any, Callable, Protocol
+from typing import Any, Protocol
 
 from omniship.core.context import ExecutionContext
 from omniship.core.graph import StageGraph
@@ -116,12 +115,12 @@ class StageExecutor:
     ) -> bool:
         graph.validate()
 
-        for l in self.listeners:
-            l.on_stage_start(graph.stage, graph)
+        for listener in self.listeners:
+            listener.on_stage_start(graph.stage, graph)
 
         if not graph.nodes:
-            for l in self.listeners:
-                l.on_stage_finish(graph.stage, True)
+            for listener in self.listeners:
+                listener.on_stage_finish(graph.stage, True)
             return True
 
         completed_nodes: set[str] = set()
@@ -180,8 +179,8 @@ class StageExecutor:
                     context.record_result(node_id, res)
                     skipped_nodes.add(node_id)
                     progress_made = True
-                    for l in self.listeners:
-                        l.on_node_finish(graph.stage, node, res)
+                    for listener in self.listeners:
+                        listener.on_node_finish(graph.stage, node, res)
                     continue
 
                 # Check if any dependency was skipped due to condition
@@ -195,8 +194,8 @@ class StageExecutor:
                     context.record_result(node_id, res)
                     skipped_nodes.add(node_id)
                     progress_made = True
-                    for l in self.listeners:
-                        l.on_node_finish(graph.stage, node, res)
+                    for listener in self.listeners:
+                        listener.on_node_finish(graph.stage, node, res)
                     continue
 
                 # Check node condition
@@ -209,13 +208,13 @@ class StageExecutor:
                     context.record_result(node_id, res)
                     skipped_nodes.add(node_id)
                     progress_made = True
-                    for l in self.listeners:
-                        l.on_node_finish(graph.stage, node, res)
+                    for listener in self.listeners:
+                        listener.on_node_finish(graph.stage, node, res)
                     continue
 
                 # Node is ready to run!
-                for l in self.listeners:
-                    l.on_node_start(graph.stage, node)
+                for listener in self.listeners:
+                    listener.on_node_start(graph.stage, node)
 
                 task = asyncio.create_task(self.execute_node(node, context))
                 running_tasks[node_id] = task
@@ -238,15 +237,15 @@ class StageExecutor:
                     else:
                         failed_nodes.add(node.id)
 
-                    for l in self.listeners:
-                        l.on_node_finish(graph.stage, node, result)
+                    for listener in self.listeners:
+                        listener.on_node_finish(graph.stage, node, result)
             elif not progress_made:
                 # No tasks running and no progress made -> break to prevent infinite loop
                 break
 
         stage_success = len(failed_nodes) == 0
-        for l in self.listeners:
-            l.on_stage_finish(graph.stage, stage_success)
+        for listener in self.listeners:
+            listener.on_stage_finish(graph.stage, stage_success)
 
         return stage_success
 

@@ -1,9 +1,9 @@
 from __future__ import annotations
 
+import subprocess
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
-import subprocess
 from typing import Mapping
 
 from omniship.core.artifact import Artifact

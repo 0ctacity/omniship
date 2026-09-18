@@ -1,4 +1,5 @@
 import sys
+
 import click
 
 from omniship.cli.runner import run_pipeline

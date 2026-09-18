@@ -1,12 +1,19 @@
 import asyncio
+from dataclasses import replace
 from pathlib import Path
 
 from rich.console import Console
 
 from omniship.cli.ui import TerminalUI
 from omniship.config.loader import find_config_file, load_and_validate
+from omniship.core.artifact_bundle import (
+    export_artifacts,
+    import_artifact_bundles,
+    import_artifacts,
+)
 from omniship.core.context import ExecutionContext
 from omniship.core.executor import StageExecutor
+from omniship.core.graph import StageGraph
 from omniship.core.stage import Stage
 from omniship.plugins.discovery import load_plugins
 
@@ -15,6 +22,8 @@ def run_pipeline(
     stages_to_run: list[Stage],
     config_path: str | None = None,
     console: Console | None = None,
+    artifact_import_path: str | None = None,
+    artifact_export_path: str | None = None,
 ) -> int:
     console = console or Console()
     console.print("[bold]OmniShip v0.1.0[/bold]")
@@ -41,6 +50,15 @@ def run_pipeline(
         workspace_root=workspace_root,
         stage=stages_to_run[0],
     )
+    if artifact_import_path:
+        try:
+            source = Path(artifact_import_path)
+            if not source.is_absolute():
+                source = workspace_root / source
+            context.artifacts = import_artifacts(source)
+        except Exception as exc:
+            console.print(f"[bold red]Artifact Import Error:[/bold red] {exc}")
+            return 1
 
     ui = TerminalUI(console=console)
     executor = StageExecutor(registry=registry, listeners=[ui])
@@ -59,6 +77,15 @@ def run_pipeline(
     success = asyncio.run(_execute())
 
     if success:
+        if artifact_export_path:
+            try:
+                destination = Path(artifact_export_path)
+                if not destination.is_absolute():
+                    destination = workspace_root / destination
+                export_artifacts(context.artifacts, destination)
+            except Exception as exc:
+                console.print(f"[bold red]Artifact Export Error:[/bold red] {exc}")
+                return 1
         if Stage.SHIP in stages_to_run:
             console.print("\n[bold green]Shipped successfully![/bold green]")
         else:
@@ -66,3 +93,64 @@ def run_pipeline(
         return 0
     else:
         return 1
+
+
+def run_node(
+    stage: Stage,
+    node_id: str,
+    config_path: str | None = None,
+    console: Console | None = None,
+    artifact_import_root: str | None = None,
+    artifact_export_path: str | None = None,
+) -> int:
+    console = console or Console()
+    registry = load_plugins()
+    path = Path(config_path) if config_path else find_config_file()
+    if not path or not path.is_file():
+        console.print("[bold red]Error:[/bold red] No omniship.yaml configuration file found.")
+        return 1
+
+    try:
+        _, graphs = load_and_validate(path, registry)
+    except Exception as exc:
+        console.print(f"[bold red]Configuration Error:[/bold red] {exc}")
+        return 1
+
+    graph = graphs[stage]
+    if node_id not in graph.nodes:
+        console.print(
+            f"[bold red]Error:[/bold red] Node '{node_id}' does not exist in stage '{stage.value}'."
+        )
+        return 1
+
+    workspace_root = path.parent.resolve()
+    context = ExecutionContext(workspace_root=workspace_root, stage=stage)
+    if artifact_import_root:
+        try:
+            source = Path(artifact_import_root)
+            if not source.is_absolute():
+                source = workspace_root / source
+            context.artifacts = import_artifact_bundles(source)
+        except Exception as exc:
+            console.print(f"[bold red]Artifact Import Error:[/bold red] {exc}")
+            return 1
+
+    selected = replace(graph.nodes[node_id], dependencies=frozenset())
+    selected_graph = StageGraph(stage=stage)
+    selected_graph.add_node(selected)
+    ui = TerminalUI(console=console)
+    executor = StageExecutor(registry=registry, listeners=[ui])
+    success = asyncio.run(executor.execute_stage(selected_graph, context))
+    if not success:
+        return 1
+
+    if artifact_export_path:
+        try:
+            destination = Path(artifact_export_path)
+            if not destination.is_absolute():
+                destination = workspace_root / destination
+            export_artifacts(context.artifacts, destination)
+        except Exception as exc:
+            console.print(f"[bold red]Artifact Export Error:[/bold red] {exc}")
+            return 1
+    return 0

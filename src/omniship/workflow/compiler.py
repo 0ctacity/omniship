@@ -5,7 +5,7 @@ from omniship.config.models import NodeConfig, OmniShipConfig
 from omniship.core.stage import Stage
 
 from .errors import WorkflowError
-from .model import NodeSpec, Pipeline, TaskDeclaration
+from .model import BlockDeclaration, NodeSpec, Pipeline, TaskDeclaration
 
 
 def compile_pipeline(pipeline: Pipeline, source_path: str | Path) -> OmniShipConfig:
@@ -32,14 +32,28 @@ def compile_pipeline(pipeline: Pipeline, source_path: str | Path) -> OmniShipCon
                         stage=stage,
                         uses="core/python",
                         params={
-                            "callable": f"{source.name}:{entry.function.__name__}"
+                            "callable": (
+                                f"{source.name}:pipeline:{stage.value}:{entry.ref.name}"
+                            )
                         },
                         needs=entry.after,
+                        execution=entry.execution,
                     )
                 )
-            else:
-                specs.extend(entry.compile(stage, workspace_root))
-
+            elif isinstance(entry, BlockDeclaration):
+                compiled = entry.block.compile(stage, workspace_root)
+                specs.extend(
+                    NodeSpec(
+                        name=spec.name,
+                        stage=spec.stage,
+                        uses=spec.uses,
+                        params=spec.params,
+                        needs=(*spec.needs, *entry.after),
+                        condition=spec.condition,
+                        execution=entry.execution,
+                    )
+                    for spec in compiled
+                )
         for spec in specs:
             if spec.stage != stage:
                 raise WorkflowError(
@@ -59,6 +73,7 @@ def compile_pipeline(pipeline: Pipeline, source_path: str | Path) -> OmniShipCon
                 needs=[dependency.name for dependency in spec.needs],
                 with_=spec.params,
                 if_=spec.condition,
+                execution=spec.execution,
             )
 
     return OmniShipConfig(

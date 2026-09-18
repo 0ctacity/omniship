@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import subprocess
 import sys
+import tempfile
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Mapping
 
+from omniship.plugins.python.wheels import publish_staged_wheels
 from omniship.runtime.context import TaskFailure
 
 if TYPE_CHECKING:
@@ -63,13 +65,19 @@ class PythonTools:
 
     def build_wheels(self, output: str = "dist") -> list[Path]:
         output_path = (self.workspace_root / output).resolve()
-        before = set(output_path.glob("*.whl")) if output_path.exists() else set()
-        self._run(
-            [sys.executable, "-m", "build", "--wheel", "--outdir", str(output_path)]
-        )
-        wheels = sorted(set(output_path.glob("*.whl")) - before)
+        if not output_path.is_relative_to(self.workspace_root.resolve()):
+            raise TaskFailure("Wheel output path escapes workspace")
+        with tempfile.TemporaryDirectory(
+            prefix=".omniship-wheel-",
+            dir=self.workspace_root,
+        ) as staging_directory:
+            staging = Path(staging_directory)
+            self._run(
+                [sys.executable, "-m", "build", "--wheel", "--outdir", str(staging)]
+            )
+            wheels = publish_staged_wheels(staging, output_path)
         if not wheels:
-            raise TaskFailure("Wheel build produced no new .whl files")
+            raise TaskFailure("Wheel build produced no .whl files")
         return wheels
 
     def build_wheel(self, output: str = "dist") -> Path:
@@ -85,4 +93,3 @@ class Python(PythonTools):
     def __init__(self, context: TaskContext) -> None:
         super().__init__(context.workspace, context.env)
         self.project = ProjectTools(context.workspace)
-

@@ -1,7 +1,9 @@
 import asyncio
 import os
 import sys
+import tempfile
 import time
+from pathlib import Path
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -11,6 +13,7 @@ from omniship.core.node import NodeInputs
 from omniship.core.result import NodeResult, NodeStatus
 from omniship.core.stage import Stage
 from omniship.plugins.metadata import OperationDefinition
+from omniship.plugins.python.wheels import publish_staged_wheels
 
 
 class RuffConfig(BaseModel):
@@ -106,17 +109,24 @@ class WheelOperation:
                 duration=time.monotonic() - started,
                 error_message="Wheel output path escapes workspace",
             )
-        before = set(output.glob("*.whl")) if output.exists() else set()
-        arguments = [
-            sys.executable,
-            "-m",
-            "build",
-            "--wheel",
-            "--outdir",
-            str(output),
-        ]
+        wheels: list[Path] = []
         try:
-            return_code, stdout, stderr = await _execute_tool(context, arguments)
+            with tempfile.TemporaryDirectory(
+                prefix=".omniship-wheel-",
+                dir=context.workspace_root,
+            ) as staging_directory:
+                staging = Path(staging_directory)
+                arguments = [
+                    sys.executable,
+                    "-m",
+                    "build",
+                    "--wheel",
+                    "--outdir",
+                    str(staging),
+                ]
+                return_code, stdout, stderr = await _execute_tool(context, arguments)
+                if return_code == 0:
+                    wheels = publish_staged_wheels(staging, output)
         except Exception as exc:
             return NodeResult(
                 status=NodeStatus.FAILED,
@@ -131,14 +141,13 @@ class WheelOperation:
                 stderr=stderr,
                 error_message=f"Python wheel build failed with exit code {return_code}",
             )
-        wheels = sorted(set(output.glob("*.whl")) - before)
         if config.verify and not wheels:
             return NodeResult(
                 status=NodeStatus.FAILED,
                 duration=time.monotonic() - started,
                 stdout=stdout,
                 stderr=stderr,
-                error_message="Wheel build produced no new .whl files",
+                error_message="Wheel build produced no .whl files",
             )
         return NodeResult(
             status=NodeStatus.SUCCESS,

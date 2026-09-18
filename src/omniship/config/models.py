@@ -1,4 +1,5 @@
 from typing import Any
+
 from pydantic import BaseModel, ConfigDict, Field
 
 
@@ -10,6 +11,7 @@ class NodeConfig(BaseModel):
     with_: dict[str, Any] = Field(default_factory=dict, alias="with")
     if_: dict[str, Any] | str | None = Field(default=None, alias="if")
     when: dict[str, Any] | None = Field(default=None)
+    execution: Any = Field(default=None, exclude=True)
 
     @property
     def condition(self) -> dict[str, Any] | str | None:

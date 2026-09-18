@@ -46,8 +46,6 @@ class StageGraph:
 
         # 2. Cycle detection via DFS (3-color tracking: 0=unvisited, 1=visiting, 2=visited)
         visited: dict[str, int] = {}
-        parent_map: dict[str, str] = {}
-
         def dfs(curr: str, path: list[str]) -> None:
             visited[curr] = 1
             for nxt in self._dependents.get(curr, set()):

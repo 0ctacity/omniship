@@ -1,6 +1,5 @@
 from omniship.core.stage import Stage
 from omniship.plugins.discovery import load_plugins
-from omniship.plugins.metadata import OperationDefinition
 from omniship.plugins.registry import PluginRegistry
 from omniship.plugins.template import generate_operation_template
 
@@ -14,6 +13,9 @@ def test_plugin_registry_and_discovery():
     assert reg.has_operation("python/pytest")
     assert reg.has_operation("python/wheel")
     assert reg.has_operation("github/release")
+    assert [generator.name for generator in reg.list_workflow_generators()] == [
+        "github/actions"
+    ]
 
     op = reg.get_operation("core/command")
     assert op.name == "core/command"
@@ -50,3 +52,18 @@ def test_custom_plugin_registration():
     definition = reg.get_definition("custom/test")
     assert definition.name == "custom/test"
     assert definition.cacheable is True
+
+
+def test_custom_plugin_can_register_a_workflow_generator():
+    reg = PluginRegistry()
+
+    class CustomGenerator:
+        name = "custom/ci"
+
+        def generate(self, config, source_path, config_path, pipeline):
+            return ()
+
+    generator = CustomGenerator()
+    reg.register_workflow_generator(generator)
+
+    assert reg.list_workflow_generators() == [generator]

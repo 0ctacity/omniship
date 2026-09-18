@@ -19,7 +19,7 @@ from omniship.runtime import TaskContext, TaskFailure
 
 
 class PythonTaskConfig(BaseModel):
-    callable: str = Field(description="Workspace-relative Python file and function")
+    callable: str = Field(description="Workspace-relative Python task reference")
 
 
 class PythonTaskOperation:
@@ -60,10 +60,21 @@ class PythonTaskOperation:
 
     @staticmethod
     def _load_callable(workspace_root: Path, reference: str):
-        try:
-            file_name, function_name = reference.rsplit(":", 1)
-        except ValueError as exc:
-            raise TaskFailure("Callable must use file.py:function format") from exc
+        parts = reference.split(":")
+        if len(parts) == 2:
+            file_name, function_name = parts
+            pipeline_task: tuple[Stage, str] | None = None
+        elif len(parts) == 4 and parts[1] == "pipeline":
+            file_name, _, stage_name, function_name = parts
+            try:
+                pipeline_task = (Stage(stage_name), function_name)
+            except ValueError as exc:
+                raise TaskFailure(f"Unknown pipeline stage: {stage_name}") from exc
+        else:
+            raise TaskFailure(
+                "Callable must use file.py:function or "
+                "file.py:pipeline:stage:task format"
+            )
         path = (workspace_root / file_name).resolve()
         if not path.is_relative_to(workspace_root.resolve()):
             raise TaskFailure("Python task path escapes workspace")
@@ -80,7 +91,14 @@ class PythonTaskOperation:
         except Exception:
             sys.modules.pop(module_name, None)
             raise
-        function = getattr(module, function_name, None)
+        if pipeline_task is None:
+            function = getattr(module, function_name, None)
+        else:
+            pipeline = getattr(module, "pipeline", None)
+            task_callable = getattr(pipeline, "task_callable", None)
+            if task_callable is None:
+                raise TaskFailure("Workflow does not export a valid Pipeline")
+            function = task_callable(*pipeline_task)
         if not inspect.isfunction(function):
             raise TaskFailure(f"Python task function not found: {function_name}")
         signature = inspect.signature(function)

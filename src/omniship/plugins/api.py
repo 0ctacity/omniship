@@ -1,3 +1,5 @@
+from dataclasses import dataclass
+from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
 
 from omniship.core.context import ExecutionContext
@@ -6,7 +8,9 @@ from omniship.core.result import NodeResult
 from omniship.core.stage import Stage
 
 if TYPE_CHECKING:
+    from omniship.config.models import OmniShipConfig
     from omniship.plugins.registry import PluginRegistry
+    from omniship.workflow.model import Pipeline
 
 
 class Operation(Protocol):
@@ -21,5 +25,23 @@ class Operation(Protocol):
     ) -> NodeResult: ...
 
 
+@dataclass(frozen=True)
+class GeneratedFile:
+    path: Path
+    content: str
+
+
+class WorkflowGenerator(Protocol):
+    name: str
+
+    def generate(
+        self,
+        config: OmniShipConfig,
+        source_path: Path,
+        config_path: Path,
+        pipeline: Pipeline,
+    ) -> tuple[GeneratedFile, ...]: ...
+
+
 class Plugin(Protocol):
-    def register(self, registry: "PluginRegistry") -> None: ...
+    def register(self, registry: PluginRegistry) -> None: ...

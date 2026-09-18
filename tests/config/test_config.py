@@ -1,8 +1,7 @@
 import pytest
 
-from omniship.config.loader import load_config_from_yaml, load_and_validate
+from omniship.config.loader import load_config_from_yaml
 from omniship.config.validation import ConfigValidationError
-from omniship.core.stage import Stage
 from omniship.plugins.discovery import load_plugins
 
 

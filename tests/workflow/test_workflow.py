@@ -2,8 +2,8 @@ from pathlib import Path
 
 import pytest
 
-from omniship import Build, Check, Pipeline, Ship
-from omniship.plugins.github import GitHubRelease
+from omniship import Pipeline
+from omniship.plugins.github import GitHubActions, GitHubRelease, GitHubRunner
 from omniship.plugins.python import Pytest, Ruff, Wheel
 from omniship.workflow.compiler import compile_pipeline
 from omniship.workflow.errors import WorkflowError
@@ -30,12 +30,21 @@ def invalid_task():
     pass
 
 
-def test_blocks_compile_to_existing_config_model(tmp_path: Path) -> None:
-    pipeline = Pipeline(
-        Check(Ruff(), Pytest(coverage=True, minimum_coverage=90)),
-        Build(Wheel()),
-        Ship(GitHubRelease(repository="octacity/omniship", tag="v1.2.3")),
-    )
+def test_stage_functions_compile_typed_blocks(tmp_path: Path) -> None:
+    pipeline = Pipeline()
+
+    @pipeline.check
+    def check(stage):
+        stage.task(Ruff())
+        stage.task(Pytest(coverage=True, minimum_coverage=90))
+
+    @pipeline.build
+    def build(stage):
+        stage.task(Wheel())
+
+    @pipeline.ship
+    def ship(stage):
+        stage.task(GitHubRelease(repository="0ctacity/omniship", tag="v1.2.3"))
 
     config = compile_pipeline(pipeline, tmp_path / "workflow.py")
 
@@ -49,24 +58,56 @@ def test_blocks_compile_to_existing_config_model(tmp_path: Path) -> None:
     assert config.ship["github-release"].with_["tag"] == "v1.2.3"
 
 
-def test_imperative_tasks_compile_with_function_dependencies(tmp_path: Path) -> None:
+def test_nested_imperative_tasks_compile_with_dependencies(tmp_path: Path) -> None:
     pipeline = Pipeline()
-    generate = pipeline.check(generate_sources, name="generate")
-    pipeline.check(run_tests, name="test", after=[generate])
+
+    @pipeline.check
+    def check(stage):
+        generate = stage.task(generate_sources, name="generate")
+        stage.task(run_tests, name="test", after=[generate])
 
     config = compile_pipeline(pipeline, tmp_path / "workflow.py")
 
     assert config.check["generate"].uses == "core/python"
     assert config.check["generate"].with_ == {
-        "callable": "workflow.py:generate_sources"
+        "callable": "workflow.py:pipeline:check:generate"
     }
     assert config.check["test"].needs == ["generate"]
 
 
+def test_execution_placement_applies_to_blocks_and_imperative_tasks(
+    tmp_path: Path,
+) -> None:
+    github = GitHubActions(default_runner=GitHubRunner.UBUNTU_24_04)
+    lint_job = github.job(runners=[GitHubRunner.UBUNTU_SLIM])
+    test_job = github.job(
+        runners=[GitHubRunner.UBUNTU_24_04, GitHubRunner.MACOS_15]
+    )
+    pipeline = Pipeline(targets=[github])
+
+    @pipeline.check
+    def check(stage):
+        stage.task(Ruff(), execution=lint_job)
+        stage.task(run_tests, name="test", execution=test_job)
+
+    config = compile_pipeline(pipeline, tmp_path / "workflow.py")
+
+    assert config.check["ruff"].execution is lint_job
+    assert config.check["test"].execution is test_job
+    assert "execution" not in serialize_config(config, source_name="workflow.py")
+
+
 def test_cross_stage_dependency_is_rejected(tmp_path: Path) -> None:
     pipeline = Pipeline()
-    prepare = pipeline.check(prepare_release, name="prepare")
-    pipeline.build(build_package, name="package", after=[prepare])
+    references = {}
+
+    @pipeline.check
+    def check(stage):
+        references["prepare"] = stage.task(prepare_release, name="prepare")
+
+    @pipeline.build
+    def build(stage):
+        stage.task(build_package, name="package", after=[references["prepare"]])
 
     with pytest.raises(WorkflowError, match="same stage"):
         compile_pipeline(pipeline, tmp_path / "workflow.py")
@@ -74,21 +115,34 @@ def test_cross_stage_dependency_is_rejected(tmp_path: Path) -> None:
 
 def test_invalid_task_signature_is_rejected_during_generation(tmp_path: Path) -> None:
     pipeline = Pipeline()
-    pipeline.build(invalid_task)
+
+    @pipeline.build
+    def build(stage):
+        stage.task(invalid_task)
 
     with pytest.raises(WorkflowError, match="exactly one context"):
         compile_pipeline(pipeline, tmp_path / "workflow.py")
 
 
 def test_duplicate_block_names_are_rejected(tmp_path: Path) -> None:
-    pipeline = Pipeline(Check(Ruff(), Ruff()))
+    pipeline = Pipeline()
+
+    @pipeline.check
+    def check(stage):
+        stage.task(Ruff())
+        stage.task(Ruff())
 
     with pytest.raises(WorkflowError, match="Duplicate node name 'ruff'"):
         compile_pipeline(pipeline, tmp_path / "workflow.py")
 
 
 def test_serializer_is_stable_and_uses_aliases(tmp_path: Path) -> None:
-    pipeline = Pipeline(Check(Ruff()))
+    pipeline = Pipeline()
+
+    @pipeline.check
+    def check(stage):
+        stage.task(Ruff())
+
     config = compile_pipeline(pipeline, tmp_path / "workflow.py")
 
     first = serialize_config(config, source_name="workflow.py")
@@ -99,3 +153,34 @@ def test_serializer_is_stable_and_uses_aliases(tmp_path: Path) -> None:
     assert "\nversion: 1\n" in first
     assert "with_:" not in first
     assert first.endswith("\n")
+
+
+def test_stage_definition_must_declare_at_least_one_task() -> None:
+    pipeline = Pipeline()
+
+    with pytest.raises(WorkflowError, match="did not declare any tasks"):
+
+        @pipeline.check
+        def check(stage):
+            pass
+
+
+def test_stage_can_only_be_defined_once() -> None:
+    pipeline = Pipeline()
+
+    @pipeline.check
+    def first(stage):
+        stage.task(Ruff())
+
+    with pytest.raises(WorkflowError, match="already defined"):
+
+        @pipeline.check
+        def second(stage):
+            stage.task(Pytest())
+
+
+def test_direct_node_registration_is_not_a_competing_api() -> None:
+    pipeline = Pipeline()
+
+    with pytest.raises(WorkflowError, match="stage definition function"):
+        pipeline.check(Ruff())

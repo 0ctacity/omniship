@@ -1,8 +1,9 @@
 from pathlib import Path
+
 import yaml
 
 from omniship.config.models import OmniShipConfig
-from omniship.config.validation import ConfigValidationError, validate_config
+from omniship.config.validation import validate_config
 from omniship.core.graph import StageGraph
 from omniship.core.stage import Stage
 from omniship.plugins.registry import PluginRegistry

@@ -1,8 +1,8 @@
-from pathlib import Path
 import tomllib
+from pathlib import Path
 
 from omniship.operations import register_core_plugin
-from omniship.plugins.github import GitHubRelease, register_github_plugin
+from omniship.plugins.github import GitHub, GitHubRelease, register_github_plugin
 from omniship.plugins.python import Python, Ruff, register_python_plugin
 from omniship.plugins.registry import PluginRegistry
 from omniship.runtime import TaskContext
@@ -37,6 +37,7 @@ def test_official_plugins_have_independent_registration_boundaries() -> None:
 def test_public_types_are_owned_by_their_provider_packages() -> None:
     assert Ruff.__module__.startswith("omniship.plugins.python")
     assert Python.__module__.startswith("omniship.plugins.python")
+    assert GitHub.__module__.startswith("omniship.plugins.github")
     assert GitHubRelease.__module__.startswith("omniship.plugins.github")
 
 

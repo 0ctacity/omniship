@@ -1,0 +1,198 @@
+from pathlib import Path
+
+import pytest
+from pydantic import ValidationError
+
+from omniship.core.artifact import Artifact
+from omniship.core.context import ExecutionContext
+from omniship.core.node import NodeInputs
+from omniship.core.stage import Stage
+from omniship.plugins.github import GitHub
+from omniship.plugins.github.operations import (
+    GithubReleaseConfig,
+    GithubReleaseOperation,
+)
+from omniship.plugins.github.runtime import GitHubReleaseResult
+from omniship.plugins.python import operations as python_operations
+from omniship.plugins.python.operations import WheelOperation
+from omniship.plugins.python.runtime import PythonTools
+from omniship.runtime import TaskContext
+
+
+@pytest.mark.asyncio
+async def test_wheel_operation_reports_an_overwritten_wheel(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    output = tmp_path / "dist"
+    output.mkdir()
+    existing = output / "demo-1.0-py3-none-any.whl"
+    existing.write_bytes(b"old wheel")
+
+    async def build_wheel(
+        context: ExecutionContext,
+        arguments: list[str],
+    ) -> tuple[int, str, str]:
+        build_output = Path(arguments[arguments.index("--outdir") + 1])
+        build_output.mkdir(parents=True, exist_ok=True)
+        (build_output / existing.name).write_bytes(b"new wheel")
+        return 0, "built", ""
+
+    monkeypatch.setattr(python_operations, "_execute_tool", build_wheel)
+
+    result = await WheelOperation().execute(
+        ExecutionContext(workspace_root=tmp_path, stage=Stage.BUILD),
+        NodeInputs(),
+    )
+
+    assert result.is_success
+    assert [artifact.path for artifact in result.artifacts] == [existing]
+    assert existing.read_bytes() == b"new wheel"
+
+
+def test_imperative_wheel_build_reports_an_overwritten_wheel(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    output = tmp_path / "dist"
+    output.mkdir()
+    existing = output / "demo-1.0-py3-none-any.whl"
+    existing.write_bytes(b"old wheel")
+    tools = PythonTools(tmp_path, {})
+
+    def build_wheel(self: PythonTools, arguments: list[str]):
+        build_output = Path(arguments[arguments.index("--outdir") + 1])
+        build_output.mkdir(parents=True, exist_ok=True)
+        (build_output / existing.name).write_bytes(b"new wheel")
+
+    monkeypatch.setattr(PythonTools, "_run", build_wheel)
+
+    assert tools.build_wheels() == [existing]
+    assert existing.read_bytes() == b"new wheel"
+
+
+def test_github_release_configuration_rejects_inline_tokens() -> None:
+    with pytest.raises(ValidationError):
+        GithubReleaseConfig.model_validate(
+            {
+                "repository": "0ctacity/omniship",
+                "tag": "v1.0.0",
+                "token": "must-not-be-accepted",
+            }
+        )
+
+
+def test_imperative_github_release_uses_context_artifacts(tmp_path: Path) -> None:
+    wheel = tmp_path / "demo.whl"
+    wheel.write_bytes(b"wheel")
+    context = TaskContext(
+        tmp_path,
+        {},
+        artifacts=(Artifact.from_path(wheel, name="python-wheel"),),
+    )
+
+    result = GitHub(context).release(
+        repository="0ctacity/omniship",
+        tag="v1.0.0",
+        dry_run=True,
+    )
+
+    assert result == GitHubReleaseResult(
+        repository="0ctacity/omniship",
+        tag="v1.0.0",
+        release_url="https://github.com/0ctacity/omniship/releases/tag/v1.0.0",
+        uploaded_count=1,
+    )
+    assert "Simulated release" in "\n".join(context.log.lines)
+    assert "python-wheel" in "\n".join(context.log.lines)
+
+
+@pytest.mark.asyncio
+async def test_github_release_operation_delegates_to_imperative_facade(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[dict[str, object]] = []
+
+    def release(self: GitHub, **kwargs: object) -> GitHubReleaseResult:
+        calls.append(kwargs)
+        return GitHubReleaseResult(
+            repository=str(kwargs["repository"]),
+            tag=str(kwargs["tag"]),
+            release_url="https://example.test/release",
+            uploaded_count=2,
+        )
+
+    monkeypatch.setattr(GitHub, "release", release)
+
+    result = await GithubReleaseOperation().execute(
+        ExecutionContext(workspace_root=tmp_path, stage=Stage.SHIP),
+        NodeInputs(
+            params={
+                "repository": "0ctacity/omniship",
+                "tag": "v1.0.0",
+                "generate_notes": True,
+                "title": "OmniShip 1.0",
+                "draft": True,
+                "files": ["dist.whl"],
+                "dry_run": True,
+            }
+        ),
+    )
+
+    assert result.is_success
+    assert result.outputs["release_url"] == "https://example.test/release"
+    assert calls == [
+        {
+            "repository": "0ctacity/omniship",
+            "tag": "v1.0.0",
+            "notes": "auto",
+            "title": "OmniShip 1.0",
+            "draft": True,
+            "prerelease": False,
+            "files": ("dist.whl",),
+            "dry_run": True,
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_github_release_requires_environment_token(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+
+    result = await GithubReleaseOperation().execute(
+        ExecutionContext(workspace_root=tmp_path, stage=Stage.SHIP),
+        NodeInputs(
+            params={"repository": "0ctacity/omniship", "tag": "v1.0.0"}
+        ),
+    )
+
+    assert result.is_failed
+    assert result.error_message == (
+        "GITHUB_TOKEN is required for github/release when dry_run is false"
+    )
+
+
+@pytest.mark.asyncio
+async def test_github_release_dry_run_does_not_require_token(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+
+    result = await GithubReleaseOperation().execute(
+        ExecutionContext(workspace_root=tmp_path, stage=Stage.SHIP),
+        NodeInputs(
+            params={
+                "repository": "0ctacity/omniship",
+                "tag": "v1.0.0",
+                "dry_run": True,
+            }
+        ),
+    )
+
+    assert result.is_success
+    assert "simulated" in result.stdout.lower()

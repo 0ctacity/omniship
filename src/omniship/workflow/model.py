@@ -24,6 +24,7 @@ class NodeSpec:
     params: dict[str, Any] = field(default_factory=dict)
     needs: tuple[NodeRef, ...] = ()
     condition: dict[str, Any] | str | None = None
+    execution: Any = None
 
 
 class Block(Protocol):
@@ -31,94 +32,148 @@ class Block(Protocol):
 
 
 @dataclass(frozen=True)
-class StageGroup:
-    stage: Stage
-    blocks: tuple[Block, ...]
-
-
-class Check(StageGroup):
-    def __init__(self, *blocks: Block) -> None:
-        super().__init__(Stage.CHECK, blocks)
-
-
-class Build(StageGroup):
-    def __init__(self, *blocks: Block) -> None:
-        super().__init__(Stage.BUILD, blocks)
-
-
-class Ship(StageGroup):
-    def __init__(self, *blocks: Block) -> None:
-        super().__init__(Stage.SHIP, blocks)
-
-
-@dataclass(frozen=True)
 class TaskDeclaration:
     function: Callable[[Any], Any]
     ref: NodeRef
     after: tuple[NodeRef, ...] = ()
+    execution: Any = None
+
+
+@dataclass(frozen=True)
+class BlockDeclaration:
+    block: Block
+    after: tuple[NodeRef, ...] = ()
+    execution: Any = None
+
+
+class StageBuilder:
+    def __init__(self, pipeline: Pipeline, stage: Stage) -> None:
+        self._pipeline = pipeline
+        self.stage = stage
+
+    def task(
+        self,
+        item: Any = None,
+        *,
+        after: Iterable[NodeRef | Callable[[Any], Any]] = (),
+        name: str | None = None,
+        execution: Any = None,
+    ) -> Any:
+        if item is None:
+            def decorator(function: Callable[[Any], Any]) -> Callable[[Any], Any]:
+                return self._pipeline._add_imperative_task(
+                    self.stage,
+                    function,
+                    name=name,
+                    after=after,
+                    execution=execution,
+                )
+
+            return decorator
+        if inspect.isfunction(item):
+            return self._pipeline._add_imperative_task(
+                self.stage,
+                item,
+                name=name,
+                after=after,
+                execution=execution,
+            )
+        if name is not None:
+            raise WorkflowError("name applies only to imperative tasks")
+        return self._pipeline._add_block_task(
+            self.stage,
+            item,
+            after=after,
+            execution=execution,
+        )
 
 
 class Pipeline:
-    def __init__(self, *groups: StageGroup) -> None:
-        self._entries: dict[Stage, list[Block | TaskDeclaration]] = {
+    def __init__(self, *, targets: Iterable[Any] = ()) -> None:
+        self._entries: dict[Stage, list[BlockDeclaration | TaskDeclaration]] = {
             stage: [] for stage in Stage
         }
+        self._stage_definitions: dict[Stage, Callable[[StageBuilder], Any]] = {}
         self._task_refs: dict[Callable[[Any], Any], NodeRef] = {}
-        for group in groups:
-            self.add(group)
+        self._task_callables: dict[tuple[Stage, str], Callable[[Any], Any]] = {}
+        self.targets = tuple(targets)
 
-    def add(self, group: StageGroup) -> Pipeline:
-        self._entries[group.stage].extend(group.blocks)
-        return self
+    def check(self, definition: Callable[[StageBuilder], Any]) -> Callable[[StageBuilder], Any]:
+        return self._define_stage(Stage.CHECK, definition)
 
-    def check(self, *items: Any, **kwargs: Any) -> Any:
-        return self._register(Stage.CHECK, *items, **kwargs)
+    def build(self, definition: Callable[[StageBuilder], Any]) -> Callable[[StageBuilder], Any]:
+        return self._define_stage(Stage.BUILD, definition)
 
-    def build(self, *items: Any, **kwargs: Any) -> Any:
-        return self._register(Stage.BUILD, *items, **kwargs)
+    def ship(self, definition: Callable[[StageBuilder], Any]) -> Callable[[StageBuilder], Any]:
+        return self._define_stage(Stage.SHIP, definition)
 
-    def ship(self, *items: Any, **kwargs: Any) -> Any:
-        return self._register(Stage.SHIP, *items, **kwargs)
-
-    def entries(self, stage: Stage) -> tuple[Block | TaskDeclaration, ...]:
+    def entries(self, stage: Stage) -> tuple[BlockDeclaration | TaskDeclaration, ...]:
         return tuple(self._entries[stage])
 
-    def _register(
+    def task_callable(self, stage: Stage, name: str) -> Callable[[Any], Any]:
+        try:
+            return self._task_callables[(stage, name)]
+        except KeyError as exc:
+            raise WorkflowError(
+                f"Imperative task '{name}' does not exist in stage '{stage.value}'"
+            ) from exc
+
+    def _define_stage(
         self,
         stage: Stage,
-        *items: Any,
-        after: Iterable[NodeRef | Callable[[Any], Any]] = (),
-        name: str | None = None,
-    ) -> Any:
-        after_refs = tuple(self._resolve_ref(item) for item in after)
-        if not items:
-            def decorator(function: Callable[[Any], Any]) -> Callable[[Any], Any]:
-                return self._add_task(stage, function, name, after_refs)
+        definition: Callable[[StageBuilder], Any],
+    ) -> Callable[[StageBuilder], Any]:
+        if not inspect.isfunction(definition):
+            raise WorkflowError(
+                f"pipeline.{stage.value} requires a stage definition function"
+            )
+        if stage in self._stage_definitions:
+            raise WorkflowError(f"Stage '{stage.value}' is already defined")
+        if len(inspect.signature(definition).parameters) != 1:
+            raise WorkflowError(
+                f"Stage definition '{definition.__name__}' must accept exactly one stage argument"
+            )
 
-            return decorator
+        self._stage_definitions[stage] = definition
+        before = len(self._entries[stage])
+        definition(StageBuilder(self, stage))
+        if len(self._entries[stage]) == before:
+            self._stage_definitions.pop(stage, None)
+            raise WorkflowError(
+                f"{stage.value.capitalize()} stage '{definition.__name__}' did not declare any tasks"
+            )
+        return definition
 
-        if len(items) == 1 and inspect.isfunction(items[0]):
-            return self._add_task(stage, items[0], name, after_refs)
-
-        if name is not None or after_refs:
-            raise WorkflowError("name and after apply only to imperative tasks")
-        self._entries[stage].extend(items)
-        refs = tuple(NodeRef(self._block_name(item), stage) for item in items)
-        return refs[0] if len(refs) == 1 else refs
-
-    def _add_task(
+    def _add_imperative_task(
         self,
         stage: Stage,
         function: Callable[[Any], Any],
+        *,
         name: str | None,
-        after: tuple[NodeRef, ...],
+        after: Iterable[NodeRef | Callable[[Any], Any]],
+        execution: Any,
     ) -> Callable[[Any], Any]:
-        if function.__qualname__ != function.__name__:
-            raise WorkflowError("Imperative tasks must be top-level functions")
         ref = NodeRef(name or function.__name__.replace("_", "-"), stage)
-        self._entries[stage].append(TaskDeclaration(function, ref, after))
+        after_refs = tuple(self._resolve_ref(item) for item in after)
+        self._entries[stage].append(
+            TaskDeclaration(function, ref, after_refs, execution)
+        )
         self._task_refs[function] = ref
+        self._task_callables[(stage, ref.name)] = function
         return function
+
+    def _add_block_task(
+        self,
+        stage: Stage,
+        block: Block,
+        *,
+        after: Iterable[NodeRef | Callable[[Any], Any]],
+        execution: Any,
+    ) -> NodeRef:
+        ref = NodeRef(self._block_name(block), stage)
+        after_refs = tuple(self._resolve_ref(item) for item in after)
+        self._entries[stage].append(BlockDeclaration(block, after_refs, execution))
+        return ref
 
     def _resolve_ref(self, value: NodeRef | Callable[[Any], Any]) -> NodeRef:
         if isinstance(value, NodeRef):

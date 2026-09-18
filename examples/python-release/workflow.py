@@ -1,27 +1,31 @@
-from omniship import Check, Pipeline
+from omniship import Pipeline
 from omniship.plugins.github import GitHubRelease
 from omniship.plugins.python import Pytest, Python, Ruff
 
+pipeline = Pipeline()
 
-pipeline = Pipeline(
-    Check(
-        Ruff(),
-        Pytest(),
-    )
-)
+
+@pipeline.check
+def check(stage):
+    stage.task(Ruff())
+    stage.task(Pytest())
 
 
 @pipeline.build
-def package(ctx):
-    wheel = Python(ctx).build_wheel()
-    ctx.artifacts.add(wheel)
+def build(stage):
+    @stage.task
+    def package(ctx):
+        wheel = Python(ctx).build_wheel()
+        ctx.artifacts.add(wheel)
 
 
-pipeline.ship(
-    GitHubRelease(
-        repository="octacity/omniship",
-        tag="v0.1.0",
-        notes="auto",
-        dry_run=True,
+@pipeline.ship
+def ship(stage):
+    stage.task(
+        GitHubRelease(
+            repository="0ctacity/omniship",
+            tag="v0.1.0",
+            notes="auto",
+            dry_run=True,
+        )
     )
-)

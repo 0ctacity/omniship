@@ -1,5 +1,5 @@
-from importlib.metadata import entry_points
 import logging
+from importlib.metadata import entry_points
 
 from omniship.plugins.registry import PluginRegistry
 

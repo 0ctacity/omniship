@@ -1,7 +1,12 @@
 from pathlib import Path
+
 from omniship.core.artifact import Artifact, ArtifactSet
+from omniship.core.artifact_bundle import (
+    export_artifacts,
+    import_artifact_bundles,
+    import_artifacts,
+)
 from omniship.core.context import ExecutionContext
-from omniship.core.node import Node, NodeInputs
 from omniship.core.result import NodeResult, NodeStatus
 from omniship.core.stage import Stage
 
@@ -30,6 +35,40 @@ def test_artifact_and_set(tmp_path: Path):
     assert aset.get("dist/bin1") == a1
     assert aset.get("dist/bin2") == a2
     assert len(aset.to_list()) == 2
+
+
+def test_artifact_bundle_round_trips_files_and_metadata(tmp_path: Path) -> None:
+    wheel = tmp_path / "dist" / "demo.whl"
+    wheel.parent.mkdir()
+    wheel.write_bytes(b"wheel")
+    artifacts = ArtifactSet()
+    artifacts.add(
+        Artifact.from_path(wheel, name="python-wheel", metadata={"kind": "wheel"})
+    )
+    bundle = tmp_path / "handoff"
+
+    export_artifacts(artifacts, bundle)
+    wheel.unlink()
+    restored = import_artifacts(bundle)
+
+    artifact = restored.get("python-wheel")
+    assert artifact is not None
+    assert artifact.path.read_bytes() == b"wheel"
+    assert artifact.metadata == {"kind": "wheel"}
+
+
+def test_artifact_bundle_root_merges_parallel_build_outputs(tmp_path: Path) -> None:
+    imports = tmp_path / "imports"
+    for name in ("linux.whl", "macos.whl"):
+        source = tmp_path / name
+        source.write_text(name, encoding="utf-8")
+        artifacts = ArtifactSet()
+        artifacts.add(Artifact.from_path(source))
+        export_artifacts(artifacts, imports / f"build-{name}")
+
+    restored = import_artifact_bundles(imports)
+
+    assert {artifact.name for artifact in restored} == {"linux.whl", "macos.whl"}
 
 
 def test_node_result():

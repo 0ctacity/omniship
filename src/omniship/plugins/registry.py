@@ -1,4 +1,4 @@
-from omniship.plugins.api import Operation
+from omniship.plugins.api import Operation, WorkflowGenerator
 from omniship.plugins.metadata import OperationDefinition
 
 
@@ -10,6 +10,7 @@ class PluginRegistry:
     def __init__(self) -> None:
         self._operations: dict[str, Operation] = {}
         self._definitions: dict[str, OperationDefinition] = {}
+        self._workflow_generators: dict[str, WorkflowGenerator] = {}
 
     def register_operation(
         self,
@@ -40,3 +41,9 @@ class PluginRegistry:
 
     def list_operations(self) -> list[OperationDefinition]:
         return list(self._definitions.values())
+
+    def register_workflow_generator(self, generator: WorkflowGenerator) -> None:
+        self._workflow_generators[generator.name] = generator
+
+    def list_workflow_generators(self) -> list[WorkflowGenerator]:
+        return list(self._workflow_generators.values())

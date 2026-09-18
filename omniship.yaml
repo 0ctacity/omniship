@@ -6,10 +6,8 @@ check:
   pytest:
     uses: python/pytest
 build:
-  package:
-    uses: core/python
-    with:
-      callable: workflow.py:pipeline:build:package
+  wheel:
+    uses: python/wheel
 ship:
   github-release:
     uses: github/release
@@ -17,4 +15,3 @@ ship:
       repository: 0ctacity/omniship
       tag: v0.1.0
       generate_notes: true
-      dry_run: true

@@ -1,6 +1,5 @@
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
 
 from omniship.core.artifact import Artifact, ArtifactSet
 from omniship.core.result import NodeResult

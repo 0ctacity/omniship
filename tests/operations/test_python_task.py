@@ -57,15 +57,17 @@ async def test_decorated_task_remains_importable_at_execution_time(
         "from omniship import Pipeline\n"
         "pipeline = Pipeline()\n"
         "@pipeline.build\n"
-        "def package(ctx):\n"
-        "    ctx.log.info('decorated task ran')\n",
+        "def build(stage):\n"
+        "    @stage.task\n"
+        "    def package(ctx):\n"
+        "        ctx.log.info('decorated task ran')\n",
         encoding="utf-8",
     )
     context = ExecutionContext(workspace_root=tmp_path, stage=Stage.BUILD)
 
     result = await PythonTaskOperation().execute(
         context,
-        NodeInputs(params={"callable": "workflow.py:package"}),
+        NodeInputs(params={"callable": "workflow.py:pipeline:build:package"}),
     )
 
     assert result.is_success

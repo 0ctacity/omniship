@@ -1,4 +1,5 @@
 from pathlib import Path
+
 from click.testing import CliRunner
 
 from omniship.cli.app import cli
