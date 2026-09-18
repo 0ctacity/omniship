@@ -1,6 +1,5 @@
 """Compatibility import for the official GitHub provider."""
 
-from omniship.plugins.github import GitHubRelease
+from omniship.plugins.github import GitHubPages, GitHubRelease
 
-__all__ = ["GitHubRelease"]
-
+__all__ = ["GitHubPages", "GitHubRelease"]

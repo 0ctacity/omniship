@@ -3,7 +3,12 @@ from pathlib import Path
 import pytest
 
 from omniship import Logging, LogLevel, Pipeline
-from omniship.plugins.github import GitHubActions, GitHubRelease, GitHubRunner
+from omniship.plugins.github import (
+    GitHubActions,
+    GitHubPages,
+    GitHubRelease,
+    GitHubRunner,
+)
 from omniship.plugins.python import Pytest, Ruff, Wheel
 from omniship.workflow.compiler import compile_pipeline
 from omniship.workflow.errors import WorkflowError
@@ -56,6 +61,30 @@ def test_stage_functions_compile_typed_blocks(tmp_path: Path) -> None:
     }
     assert config.build["wheel"].uses == "python/wheel"
     assert config.ship["github-release"].with_["tag"] == "v1.2.3"
+
+
+def test_github_pages_compiles_as_a_ship_block(tmp_path: Path) -> None:
+    pipeline = Pipeline()
+
+    @pipeline.ship
+    def ship(stage):
+        stage.task(GitHubPages(artifact="docs-site"))
+
+    config = compile_pipeline(pipeline, tmp_path / "workflow.py")
+
+    assert config.ship["github-pages"].uses == "github/pages"
+    assert config.ship["github-pages"].with_ == {"artifact": "docs-site"}
+
+
+def test_github_pages_is_rejected_outside_ship(tmp_path: Path) -> None:
+    pipeline = Pipeline()
+
+    @pipeline.build
+    def build(stage):
+        stage.task(GitHubPages())
+
+    with pytest.raises(WorkflowError, match="only be used in the ship stage"):
+        compile_pipeline(pipeline, tmp_path / "workflow.py")
 
 
 def test_pipeline_logging_configuration_is_compiled(tmp_path: Path) -> None:

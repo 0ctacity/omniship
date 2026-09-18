@@ -16,12 +16,27 @@ def export_artifacts(artifacts: ArtifactSet, destination: str | Path) -> Path:
     manifest: list[dict[str, object]] = []
 
     for index, artifact in enumerate(artifacts):
-        if not artifact.path.is_file():
-            raise ValueError(f"Artifact is not a file: {artifact.path}")
+        if not artifact.path.exists():
+            raise ValueError(f"Artifact does not exist: {artifact.path}")
         stored = Path("items") / f"{index:04d}" / artifact.path.name
         target = bundle / stored
         target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(artifact.path, target)
+        if target.is_dir():
+            shutil.rmtree(target)
+        elif target.exists():
+            target.unlink()
+        if artifact.path.is_dir():
+            symlink = next(
+                (candidate for candidate in artifact.path.rglob("*") if candidate.is_symlink()),
+                None,
+            )
+            if symlink is not None:
+                raise ValueError(f"Artifact directory contains a symlink: {symlink}")
+            shutil.copytree(artifact.path, target)
+        elif artifact.path.is_file():
+            shutil.copy2(artifact.path, target)
+        else:
+            raise ValueError(f"Artifact is not a file or directory: {artifact.path}")
         manifest.append(
             {
                 "name": artifact.name,
@@ -48,7 +63,7 @@ def import_artifacts(source: str | Path) -> ArtifactSet:
     artifacts = ArtifactSet()
     for entry in document["artifacts"]:
         stored = (bundle / entry["path"]).resolve()
-        if not stored.is_relative_to(bundle) or not stored.is_file():
+        if not stored.is_relative_to(bundle) or not stored.exists():
             raise ValueError(f"Invalid artifact path in manifest: {entry['path']}")
         artifacts.add(
             Artifact.from_path(

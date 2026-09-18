@@ -7,6 +7,7 @@ from omniship.cli.plan import plan_cmd
 from omniship.cli.plugins import plugin_cmd, plugins_cmd
 from omniship.cli.run_node import run_node_cmd
 from omniship.cli.ship import ship_cmd
+from omniship.cli.update import update_cmd
 
 
 @click.group()
@@ -23,6 +24,7 @@ cli.add_command(plugins_cmd, name="plugins")
 cli.add_command(plugin_cmd, name="plugin")
 cli.add_command(generate_cmd, name="generate")
 cli.add_command(run_node_cmd, name="run-node")
+cli.add_command(update_cmd, name="update")
 
 
 def main() -> None:

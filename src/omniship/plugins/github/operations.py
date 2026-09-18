@@ -16,6 +16,65 @@ from .actions import GitHubActionsGenerator
 from .runtime import GitHub
 
 
+class GithubPagesConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    artifact: str = Field(
+        default="site",
+        min_length=1,
+        description="Name of the directory artifact containing the static site",
+    )
+
+
+class GithubPagesOperation:
+    name: str = "github/pages"
+    stages: frozenset[Stage] = frozenset({Stage.SHIP})
+    cacheable: bool = False
+
+    async def execute(
+        self,
+        context: ExecutionContext,
+        inputs: NodeInputs,
+    ) -> NodeResult:
+        start_time = time.monotonic()
+        try:
+            cfg = GithubPagesConfig.model_validate(inputs.params)
+        except Exception as exc:
+            return NodeResult(
+                status=NodeStatus.FAILED,
+                duration=time.monotonic() - start_time,
+                error_message=f"Invalid github/pages configuration: {exc}",
+            )
+
+        task_context = TaskContext(
+            context.workspace_root,
+            {**os.environ, **context.env},
+            context.artifacts.to_list(),
+            context.inputs,
+            context.emit_log,
+        )
+        try:
+            pages = await asyncio.to_thread(
+                GitHub(task_context).pages,
+                artifact=cfg.artifact,
+            )
+        except Exception as exc:
+            return NodeResult(
+                status=NodeStatus.FAILED,
+                duration=time.monotonic() - start_time,
+                error_message=str(exc),
+            )
+        return NodeResult(
+            status=NodeStatus.SUCCESS,
+            duration=time.monotonic() - start_time,
+            stdout="\n".join(task_context.log.lines),
+            outputs={
+                "artifact": pages.artifact,
+                "path": str(pages.path),
+            },
+        )
+
+
 class GithubReleaseConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -108,7 +167,21 @@ def get_github_definition() -> OperationDefinition:
     )
 
 
+def get_github_pages_definition() -> OperationDefinition:
+    return OperationDefinition(
+        name=GithubPagesOperation.name,
+        stages=GithubPagesOperation.stages,
+        description="Prepare a static site for deployment to GitHub Pages",
+        config_model=GithubPagesConfig,
+        cacheable=False,
+    )
+
+
 def register_github_plugin(registry: PluginRegistry) -> None:
+    registry.register_operation(
+        GithubPagesOperation(),
+        get_github_pages_definition(),
+    )
     registry.register_operation(
         GithubReleaseOperation(),
         get_github_definition(),

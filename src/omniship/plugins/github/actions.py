@@ -13,18 +13,9 @@ from omniship.core.stage import Stage
 from omniship.plugins.api import GeneratedFile
 from omniship.workflow.model import Pipeline
 
-CHECKOUT_ACTION = (  # v7.0.1
-    "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1"
-)
-SETUP_UV_ACTION = (  # v10.1.0
-    "astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4"
-)
-UPLOAD_ARTIFACT_ACTION = (  # v4.6.2
-    "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02"
-)
-DOWNLOAD_ARTIFACT_ACTION = (  # v4.3.0
-    "actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093"
-)
+from .dependencies import LOCK_FILENAME, GitHubActionLock
+from .runtime import PAGES_STAGING_PATH
+
 ARTIFACT_PATH = ".omniship/handoff"
 ARTIFACT_IMPORT_PATH = ".omniship/imports"
 
@@ -452,14 +443,23 @@ class GitHubActionsGenerator:
         ]
         if len(targets) > 1:
             raise ValueError("Pipeline has more than one GitHub Actions target")
-        has_release_block = any(
-            node.uses == "github/release" for node in config.ship.values()
+        github_nodes = tuple(
+            node
+            for node in config.ship.values()
+            if node.uses in {"github/pages", "github/release"}
         )
-        if not targets and not has_release_block:
+        if not targets and not github_nodes:
             return ()
         actions = targets[0] if targets else GitHubActions()
+        pages_nodes = [node for node in config.ship.values() if node.uses == "github/pages"]
+        if len(pages_nodes) > 1:
+            raise ValueError("A pipeline can contain only one GitHub Pages deployment")
 
         workspace_root = source_path.parent.resolve()
+        lock_path = workspace_root / LOCK_FILENAME
+        action_defaults = GitHubActionLock.defaults()
+        action_lock = GitHubActionLock.load(lock_path) if lock_path.is_file() else action_defaults
+        action_lock.validate_compatibility(action_defaults)
         source = source_path.resolve().relative_to(workspace_root)
         pipeline_config = config_path.resolve().relative_to(workspace_root)
         workflow_root = workspace_root / ".github" / "workflows"
@@ -472,8 +472,8 @@ class GitHubActionsGenerator:
 
         def setup_steps() -> list[dict[str, object]]:
             return [
-                {"uses": CHECKOUT_ACTION},
-                {"uses": SETUP_UV_ACTION},
+                {"uses": action_lock.reference("checkout")},
+                {"uses": action_lock.reference("setup-uv")},
                 {"run": "uv sync --all-groups --locked"},
             ]
 
@@ -521,6 +521,10 @@ class GitHubActionsGenerator:
                     raise ValueError(
                         f"Node '{node_name}' has execution metadata that is not a GitHub job"
                     )
+                if node.uses == "github/pages" and len(placement.runners) != 1:
+                    raise ValueError(
+                        "GitHub Pages deployment requires exactly one runner"
+                    )
 
                 required_permissions = GitHubPermissions()
                 if node.uses == "github/release" and not node.with_.get(
@@ -528,6 +532,13 @@ class GitHubActionsGenerator:
                 ):
                     required_permissions = GitHubPermissions(
                         contents=GitHubPermission.WRITE
+                    )
+                elif node.uses == "github/pages":
+                    required_permissions = GitHubPermissions(
+                        actions=GitHubPermission.READ,
+                        contents=GitHubPermission.READ,
+                        id_token=GitHubPermission.WRITE,
+                        pages=GitHubPermission.WRITE,
                     )
                 job_permissions = placement.permissions
                 if job_permissions is None:
@@ -565,7 +576,7 @@ class GitHubActionsGenerator:
                         dependency_job = job_ids[dependency]
                         steps.append(
                             {
-                                "uses": DOWNLOAD_ARTIFACT_ACTION,
+                                "uses": action_lock.reference("download-artifact"),
                                 "with": {
                                     "pattern": f"omniship-build-{dependency_job}*",
                                     "path": f"{ARTIFACT_IMPORT_PATH}/{dependency_job}",
@@ -581,7 +592,7 @@ class GitHubActionsGenerator:
                 if stage == Stage.SHIP and config.build:
                     steps.append(
                         {
-                            "uses": DOWNLOAD_ARTIFACT_ACTION,
+                            "uses": action_lock.reference("download-artifact"),
                             "with": {
                                 "pattern": "omniship-build-*",
                                 "path": ARTIFACT_IMPORT_PATH,
@@ -603,13 +614,30 @@ class GitHubActionsGenerator:
                     run_step["env"] = step_env
                 steps.append(run_step)
 
+                if node.uses == "github/pages":
+                    steps.extend(
+                        [
+                            {
+                                "uses": action_lock.reference(
+                                    "upload-pages-artifact"
+                                ),
+                                "with": {"path": PAGES_STAGING_PATH.as_posix()},
+                            },
+                            {
+                                "name": "Deploy GitHub Pages",
+                                "id": "deployment",
+                                "uses": action_lock.reference("deploy-pages"),
+                            },
+                        ]
+                    )
+
                 if stage == Stage.BUILD:
                     artifact_name = f"omniship-build-{job_id}"
                     if len(placement.runners) > 1:
                         artifact_name += "-${{ matrix.runner }}"
                     steps.append(
                         {
-                            "uses": UPLOAD_ARTIFACT_ACTION,
+                            "uses": action_lock.reference("upload-artifact"),
                             "with": {
                                 "name": artifact_name,
                                 "path": f"{ARTIFACT_PATH}/{job_id}",
@@ -626,6 +654,11 @@ class GitHubActionsGenerator:
                 }
                 if job_permissions is not None:
                     job["permissions"] = job_permissions.to_document()
+                if node.uses == "github/pages":
+                    job["environment"] = {
+                        "name": "github-pages",
+                        "url": "${{ steps.deployment.outputs.page_url }}",
+                    }
                 job["runs-on"] = placement.runners[0].value
                 job["steps"] = steps
                 if len(placement.runners) > 1:
@@ -716,6 +749,22 @@ class GitHubActionsGenerator:
             )
         )
 
+        ship_document: dict[str, object] = {
+            "name": actions.ship.name,
+            "on": workflow_events(
+                actions.ship,
+                (GitHubPush(tags=("v*",)),),
+                is_callable=False,
+            ),
+            "permissions": actions.default_permissions.to_document(),
+            "jobs": ship_jobs,
+        }
+        if pages_nodes:
+            ship_document["concurrency"] = {
+                "group": "pages",
+                "cancel-in-progress": True,
+            }
+
         documents = (
             (
                 actions.check,
@@ -748,19 +797,10 @@ class GitHubActionsGenerator:
             ),
             (
                 actions.ship,
-                {
-                    "name": actions.ship.name,
-                    "on": workflow_events(
-                        actions.ship,
-                        (GitHubPush(tags=("v*",)),),
-                        is_callable=False,
-                    ),
-                    "permissions": actions.default_permissions.to_document(),
-                    "jobs": ship_jobs,
-                },
+                ship_document,
             ),
         )
-        generated = []
+        generated = [GeneratedFile(lock_path, action_lock.render())]
         for workflow, document in documents:
             rendered = yaml.safe_dump(
                 document,

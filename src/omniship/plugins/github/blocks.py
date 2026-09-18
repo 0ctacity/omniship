@@ -85,3 +85,25 @@ class GitHubRelease:
         if self.dry_run:
             params["dry_run"] = True
         return [NodeSpec(self.name, stage, "github/release", params)]
+
+
+@dataclass(frozen=True)
+class GitHubPages:
+    artifact: str = "site"
+    name: str = "github-pages"
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.artifact, str) or not self.artifact:
+            raise TypeError("GitHub Pages artifact must be a non-empty string")
+
+    def compile(self, stage: Stage, workspace_root: Path) -> list[NodeSpec]:
+        if stage != Stage.SHIP:
+            raise WorkflowError("GitHubPages can only be used in the ship stage")
+        return [
+            NodeSpec(
+                self.name,
+                stage,
+                "github/pages",
+                {"artifact": self.artifact},
+            )
+        ]

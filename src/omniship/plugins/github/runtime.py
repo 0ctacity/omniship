@@ -1,12 +1,16 @@
 from __future__ import annotations
 
 import json
+import shutil
 import urllib.request
 from collections.abc import Iterable
 from dataclasses import dataclass
+from pathlib import Path
 
 from omniship.core.artifact import Artifact
 from omniship.runtime import TaskContext, TaskFailure
+
+PAGES_STAGING_PATH = Path(".omniship/pages/site")
 
 
 @dataclass(frozen=True, slots=True)
@@ -15,6 +19,12 @@ class GitHubReleaseResult:
     tag: str
     release_url: str
     uploaded_count: int
+
+
+@dataclass(frozen=True, slots=True)
+class GitHubPagesResult:
+    artifact: str
+    path: Path
 
 
 class GitHub:
@@ -89,6 +99,36 @@ class GitHub:
             release_url=release_url,
             uploaded_count=len(artifacts),
         )
+
+    def pages(self, *, artifact: str = "site") -> GitHubPagesResult:
+        selected = self.context.artifacts.get(artifact)
+        if selected is None:
+            raise TaskFailure(f"GitHub Pages artifact '{artifact}' was not found")
+        if not selected.path.is_dir():
+            raise TaskFailure(
+                f"GitHub Pages artifact '{artifact}' must be a directory"
+            )
+
+        symlink = next(
+            (candidate for candidate in selected.path.rglob("*") if candidate.is_symlink()),
+            None,
+        )
+        if symlink is not None:
+            raise TaskFailure(
+                f"GitHub Pages artifact '{artifact}' contains a symlink: {symlink}"
+            )
+        if not any(candidate.is_file() for candidate in selected.path.rglob("*")):
+            raise TaskFailure(f"GitHub Pages artifact '{artifact}' is empty")
+
+        destination = (self.context.workspace / PAGES_STAGING_PATH).resolve()
+        if destination.exists():
+            shutil.rmtree(destination)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copytree(selected.path, destination)
+        self.context.log.info(
+            f"Prepared GitHub Pages artifact '{artifact}' at {destination}"
+        )
+        return GitHubPagesResult(artifact=artifact, path=destination)
 
     def _select_artifacts(self, files: tuple[str, ...]) -> list[Artifact]:
         available = tuple(self.context.artifacts)

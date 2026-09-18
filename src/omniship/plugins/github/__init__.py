@@ -11,9 +11,9 @@ from .actions import (
     GitHubWorkflow,
     GitHubWorkflowDispatch,
 )
-from .blocks import GitHubRelease
+from .blocks import GitHubPages, GitHubRelease
 from .operations import register_github_plugin
-from .runtime import GitHub
+from .runtime import GitHub, GitHubPagesResult
 
 __all__ = [
     "GitHubActions",
@@ -24,6 +24,8 @@ __all__ = [
     "GitHubPullRequest",
     "GitHubPush",
     "GitHub",
+    "GitHubPages",
+    "GitHubPagesResult",
     "GitHubRelease",
     "GitHubRunner",
     "GitHubStringInput",

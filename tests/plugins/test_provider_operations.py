@@ -9,10 +9,11 @@ from omniship.core.node import NodeInputs
 from omniship.core.stage import Stage
 from omniship.plugins.github import GitHub
 from omniship.plugins.github.operations import (
+    GithubPagesOperation,
     GithubReleaseConfig,
     GithubReleaseOperation,
 )
-from omniship.plugins.github.runtime import GitHubReleaseResult
+from omniship.plugins.github.runtime import GitHubPagesResult, GitHubReleaseResult
 from omniship.plugins.python import operations as python_operations
 from omniship.plugins.python.operations import WheelOperation
 from omniship.plugins.python.runtime import PythonTools
@@ -196,3 +197,50 @@ async def test_github_release_dry_run_does_not_require_token(
 
     assert result.is_success
     assert "simulated" in result.stdout.lower()
+
+
+def test_imperative_github_pages_prepares_a_site_artifact(tmp_path: Path) -> None:
+    site = tmp_path / "build"
+    site.mkdir()
+    (site / "index.html").write_text("docs", encoding="utf-8")
+    context = TaskContext(
+        tmp_path,
+        {},
+        artifacts=(Artifact.from_path(site, name="docs-site"),),
+    )
+
+    result = GitHub(context).pages(artifact="docs-site")
+
+    assert result == GitHubPagesResult(
+        artifact="docs-site",
+        path=tmp_path / ".omniship" / "pages" / "site",
+    )
+    assert (result.path / "index.html").read_text(encoding="utf-8") == "docs"
+    assert "Prepared GitHub Pages artifact" in "\n".join(context.log.lines)
+
+
+@pytest.mark.asyncio
+async def test_github_pages_operation_delegates_to_imperative_facade(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+    destination = tmp_path / ".omniship" / "pages" / "site"
+
+    def pages(self: GitHub, *, artifact: str) -> GitHubPagesResult:
+        calls.append(artifact)
+        return GitHubPagesResult(artifact=artifact, path=destination)
+
+    monkeypatch.setattr(GitHub, "pages", pages)
+
+    result = await GithubPagesOperation().execute(
+        ExecutionContext(workspace_root=tmp_path, stage=Stage.SHIP),
+        NodeInputs(params={"artifact": "docs-site"}),
+    )
+
+    assert result.is_success
+    assert result.outputs == {
+        "artifact": "docs-site",
+        "path": str(destination),
+    }
+    assert calls == ["docs-site"]

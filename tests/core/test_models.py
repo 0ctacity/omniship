@@ -57,6 +57,30 @@ def test_artifact_bundle_round_trips_files_and_metadata(tmp_path: Path) -> None:
     assert artifact.metadata == {"kind": "wheel"}
 
 
+def test_artifact_bundle_round_trips_directories(tmp_path: Path) -> None:
+    site = tmp_path / "build"
+    (site / "assets").mkdir(parents=True)
+    (site / "index.html").write_text("<h1>OmniShip</h1>", encoding="utf-8")
+    (site / "assets" / "app.css").write_text("body {}", encoding="utf-8")
+    artifacts = ArtifactSet()
+    artifacts.add(Artifact.from_path(site, name="docs-site"))
+    bundle = tmp_path / "handoff"
+
+    export_artifacts(artifacts, bundle)
+    export_artifacts(artifacts, bundle)
+    restored = import_artifacts(bundle)
+
+    artifact = restored.get("docs-site")
+    assert artifact is not None
+    assert artifact.path.is_dir()
+    assert (artifact.path / "index.html").read_text(encoding="utf-8") == (
+        "<h1>OmniShip</h1>"
+    )
+    assert (artifact.path / "assets" / "app.css").read_text(encoding="utf-8") == (
+        "body {}"
+    )
+
+
 def test_artifact_bundle_root_merges_parallel_build_outputs(tmp_path: Path) -> None:
     imports = tmp_path / "imports"
     for name in ("linux.whl", "macos.whl"):

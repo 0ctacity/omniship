@@ -69,6 +69,9 @@ def test_generate_writes_valid_yaml_and_check_detects_drift(tmp_path: Path) -> N
     assert check_output.is_file()
     assert build_output.is_file()
     assert ship_output.is_file()
+    lock_output = tmp_path / "omniship.lock"
+    assert lock_output.is_file()
+    assert "[github.actions.checkout]" in lock_output.read_text(encoding="utf-8")
     check_actions = yaml.load(
         check_output.read_text(encoding="utf-8"),
         Loader=yaml.BaseLoader,
@@ -827,3 +830,129 @@ def test_manual_inputs_reach_typed_and_imperative_ship_tasks(tmp_path: Path) -> 
 
     assert executed.exit_code == 0, executed.output
     assert (tmp_path / "selected-tag.txt").read_text(encoding="utf-8") == "v2.0.0"
+
+
+def test_generate_github_pages_deployment(tmp_path: Path) -> None:
+    source = tmp_path / "workflow.py"
+    output = tmp_path / "omniship.yaml"
+    source.write_text(
+        "from omniship import Pipeline\n"
+        "from omniship.plugins.github import GitHubPages\n"
+        "pipeline = Pipeline()\n"
+        "@pipeline.build\n"
+        "def build(stage):\n"
+        "    @stage.task\n"
+        "    def docs(ctx):\n"
+        "        site = ctx.workspace / 'build'\n"
+        "        site.mkdir()\n"
+        "        (site / 'index.html').write_text('docs')\n"
+        "        ctx.artifacts.add(site, name='docs-site')\n"
+        "@pipeline.ship\n"
+        "def ship(stage):\n"
+        "    stage.task(GitHubPages(artifact='docs-site'))\n",
+        encoding="utf-8",
+    )
+
+    generated = CliRunner().invoke(
+        cli,
+        ["generate", "-f", str(source), "-o", str(output)],
+    )
+
+    assert generated.exit_code == 0, generated.output
+    ship = yaml.load(
+        (tmp_path / ".github" / "workflows" / "ship.yml").read_text(
+            encoding="utf-8"
+        ),
+        Loader=yaml.BaseLoader,
+    )
+    job = ship["jobs"]["ship-github-pages"]
+    assert ship["concurrency"] == {
+        "group": "pages",
+        "cancel-in-progress": "true",
+    }
+    assert job["permissions"] == {
+        "actions": "read",
+        "contents": "read",
+        "id-token": "write",
+        "pages": "write",
+    }
+    assert job["environment"] == {
+        "name": "github-pages",
+        "url": "${{ steps.deployment.outputs.page_url }}",
+    }
+    assert {
+        "uses": "actions/upload-pages-artifact@7b1f4a764d45c48632c6b24a0339c27f5614fb0b",
+        "with": {"path": ".omniship/pages/site"},
+    } in job["steps"]
+    assert {
+        "name": "Deploy GitHub Pages",
+        "id": "deployment",
+        "uses": "actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346",
+    } in job["steps"]
+
+
+def test_generate_uses_action_versions_from_omniship_lock(tmp_path: Path) -> None:
+    source = tmp_path / "workflow.py"
+    output = tmp_path / "omniship.yaml"
+    source.write_text(WORKFLOW, encoding="utf-8")
+    runner = CliRunner()
+    initial = runner.invoke(
+        cli,
+        ["generate", "-f", str(source), "-o", str(output)],
+    )
+    assert initial.exit_code == 0, initial.output
+    lock_path = tmp_path / "omniship.lock"
+    custom_sha = "a" * 40
+    lock_path.write_text(
+        lock_path.read_text(encoding="utf-8").replace(
+            "3d3c42e5aac5ba805825da76410c181273ba90b1",
+            custom_sha,
+        ),
+        encoding="utf-8",
+    )
+
+    regenerated = runner.invoke(
+        cli,
+        ["generate", "-f", str(source), "-o", str(output)],
+    )
+
+    assert regenerated.exit_code == 0, regenerated.output
+    check = yaml.load(
+        (tmp_path / ".github" / "workflows" / "check.yml").read_text(
+            encoding="utf-8"
+        ),
+        Loader=yaml.BaseLoader,
+    )
+    assert check["jobs"]["prepare"]["steps"][0] == {
+        "uses": f"actions/checkout@{custom_sha}"
+    }
+
+
+def test_generate_rejects_github_pages_matrix_deployment(tmp_path: Path) -> None:
+    source = tmp_path / "workflow.py"
+    output = tmp_path / "omniship.yaml"
+    source.write_text(
+        "from omniship import Pipeline\n"
+        "from omniship.plugins.github import (\n"
+        "    GitHubActions, GitHubPages, GitHubRunner,\n"
+        ")\n"
+        "github = GitHubActions()\n"
+        "pipeline = Pipeline(targets=[github])\n"
+        "@pipeline.ship\n"
+        "def ship(stage):\n"
+        "    stage.task(\n"
+        "        GitHubPages(),\n"
+        "        execution=github.job(runners=[\n"
+        "            GitHubRunner.UBUNTU_24_04, GitHubRunner.MACOS_15,\n"
+        "        ]),\n"
+        "    )\n",
+        encoding="utf-8",
+    )
+
+    generated = CliRunner().invoke(
+        cli,
+        ["generate", "-f", str(source), "-o", str(output)],
+    )
+
+    assert generated.exit_code == 1
+    assert "GitHub Pages deployment requires exactly one runner" in generated.output
