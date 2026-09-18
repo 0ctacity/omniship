@@ -91,6 +91,8 @@ def test_generate_writes_valid_yaml_and_check_detects_drift(tmp_path: Path) -> N
     build_job = build_actions["jobs"]["build-wheel"]
     build_barrier = build_actions["jobs"]["build-complete"]
     ship_job = ship_actions["jobs"]["ship-github-release"]
+    assert lint_job["name"] == "Check · Ruff"
+    assert ship_job["name"] == "Ship · GitHub Release"
     assert prepare_job["runs-on"] == "ubuntu-24.04"
     assert lint_job["runs-on"] == "ubuntu-slim"
     assert lint_job["needs"] == "prepare"
@@ -103,6 +105,7 @@ def test_generate_writes_valid_yaml_and_check_detects_drift(tmp_path: Path) -> N
     assert check_barrier["needs"] == "check-tests"
     assert build_job["runs-on"] == "macos-15"
     assert build_actions["jobs"]["check"] == {
+        "name": "Check",
         "uses": "./.github/workflows/check.yml",
     }
     assert build_job["needs"] == "check"
@@ -120,20 +123,23 @@ def test_generate_writes_valid_yaml_and_check_detects_drift(tmp_path: Path) -> N
     }
     assert {"run": "uv run omniship generate --check"} in steps
     assert {
+        "name": "Run Ruff",
         "run": (
             "uv run omniship run-node --stage check --node ruff --config omniship.yaml"
-        )
+        ),
     } in lint_job["steps"]
     assert {
+        "name": "Run Tests",
         "run": (
             "uv run omniship run-node --stage check --node tests --config omniship.yaml"
-        )
+        ),
     } in test_job["steps"]
     assert {
+        "name": "Run Wheel",
         "run": (
             "uv run omniship run-node --stage build --node wheel "
             "--config omniship.yaml --export-artifacts .omniship/handoff/build-wheel"
-        )
+        ),
     } in build_job["steps"]
     assert {
         "uses": "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02",
@@ -151,6 +157,7 @@ def test_generate_writes_valid_yaml_and_check_detects_drift(tmp_path: Path) -> N
         },
     } in ship_job["steps"]
     assert {
+        "name": "Run GitHub Release",
         "run": (
             "uv run omniship run-node --stage ship --node github-release "
             "--config omniship.yaml --import-artifacts-root .omniship/imports"
@@ -520,11 +527,12 @@ def test_build_node_dependencies_download_predecessor_artifacts(
         },
     } in package_job["steps"]
     assert {
+        "name": "Run Package",
         "run": (
             "uv run omniship run-node --stage build --node package "
             "--config omniship.yaml --import-artifacts-root .omniship/imports "
             "--export-artifacts .omniship/handoff/build-package"
-        )
+        ),
     } in package_job["steps"]
 
 
@@ -585,6 +593,7 @@ def test_generate_writes_three_renameable_stage_workflows(tmp_path: Path) -> Non
     assert build["name"] == "Package"
     assert set(build["on"]) == {"workflow_call"}
     assert build["jobs"]["check"] == {
+        "name": "CI",
         "uses": "./.github/workflows/ci.yml",
     }
     assert "build-wheel" in build["jobs"]
@@ -593,6 +602,7 @@ def test_generate_writes_three_renameable_stage_workflows(tmp_path: Path) -> Non
     assert ship["name"] == "Publish"
     assert ship["on"] == {"push": {"tags": ["v*"]}}
     assert ship["jobs"]["build"] == {
+        "name": "Package",
         "uses": "./.github/workflows/package.yml",
     }
     assert "check" not in ship["jobs"]
@@ -684,11 +694,13 @@ def test_generate_writes_typed_custom_workflow_triggers(tmp_path: Path) -> None:
     }
     assert build["on"] == {"workflow_call": {}}
     assert build["jobs"]["check"] == {
+        "name": "CI",
         "uses": "./.github/workflows/ci.yml",
     }
     assert build["jobs"]["build-package"]["needs"] == "check"
     assert ship["on"] == {"push": {"tags": ["release-*"]}}
     assert ship["jobs"]["build"] == {
+        "name": "Package",
         "uses": "./.github/workflows/package.yml",
     }
     assert "check" not in ship["jobs"]

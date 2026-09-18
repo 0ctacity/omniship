@@ -2,6 +2,8 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from omniship.core.logging import Logging
+
 
 class NodeConfig(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
@@ -20,6 +22,7 @@ class NodeConfig(BaseModel):
 
 class OmniShipConfig(BaseModel):
     version: int = 1
+    logging: Logging = Field(default_factory=Logging)
     check: dict[str, NodeConfig] = Field(default_factory=dict)
     build: dict[str, NodeConfig] = Field(default_factory=dict)
     ship: dict[str, NodeConfig] = Field(default_factory=dict)

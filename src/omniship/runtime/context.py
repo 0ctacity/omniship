@@ -4,9 +4,10 @@ import subprocess
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 
 from omniship.core.artifact import Artifact
+from omniship.core.logging import LogLevel, LogStream
 
 
 class TaskFailure(Exception):
@@ -16,9 +17,34 @@ class TaskFailure(Exception):
 @dataclass
 class TaskLog:
     lines: list[str] = field(default_factory=list)
+    _emit: Callable[[LogLevel, str, LogStream], None] | None = None
+
+    def _write(
+        self,
+        level: LogLevel,
+        message: str,
+        stream: LogStream = LogStream.LOG,
+    ) -> None:
+        text = str(message)
+        self.lines.append(text)
+        if self._emit is not None:
+            self._emit(level, text, stream)
+
+    def debug(self, message: str) -> None:
+        self._write(LogLevel.DEBUG, message)
 
     def info(self, message: str) -> None:
-        self.lines.append(message)
+        self._write(LogLevel.INFO, message)
+
+    def warning(self, message: str) -> None:
+        self._write(LogLevel.WARNING, message)
+
+    def error(self, message: str) -> None:
+        self._write(LogLevel.ERROR, message)
+
+    def output(self, message: str, *, stderr: bool = False) -> None:
+        stream = LogStream.STDERR if stderr else LogStream.STDOUT
+        self._write(LogLevel.INFO, message, stream)
 
 
 @dataclass
@@ -89,10 +115,11 @@ class TaskContext:
         env: Mapping[str, str],
         artifacts: Iterable[Artifact] = (),
         inputs: Mapping[str, Any] | None = None,
+        log_sink: Callable[[LogLevel, str, LogStream], None] | None = None,
     ) -> None:
         self.workspace = workspace_root.resolve()
         self.env = dict(env)
-        self.log = TaskLog()
+        self.log = TaskLog(_emit=log_sink)
         self.artifacts = TaskArtifacts(self.workspace, tuple(artifacts))
         self.inputs = dict(inputs or {})
         self.git = GitTools(self.workspace)

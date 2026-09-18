@@ -78,6 +78,7 @@ def compile_pipeline(pipeline: Pipeline, source_path: str | Path) -> OmniShipCon
 
     return OmniShipConfig(
         version=1,
+        logging=pipeline.logging,
         check=stages[Stage.CHECK],
         build=stages[Stage.BUILD],
         ship=stages[Stage.SHIP],

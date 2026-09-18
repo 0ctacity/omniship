@@ -1,6 +1,8 @@
 import asyncio
 import os
 import subprocess
+import traceback
+from dataclasses import replace
 from typing import Any, Protocol
 
 from omniship.core.context import ExecutionContext
@@ -45,7 +47,9 @@ def evaluate_condition(condition: Any, context: ExecutionContext) -> bool:
 
         if "branch" in condition:
             expected_branch = str(condition["branch"])
-            current_branch = os.environ.get("GIT_BRANCH") or os.environ.get("GITHUB_REF_NAME")
+            current_branch = os.environ.get("GIT_BRANCH") or os.environ.get(
+                "GITHUB_REF_NAME"
+            )
             if not current_branch:
                 try:
                     res = subprocess.run(
@@ -107,13 +111,15 @@ class StageExecutor:
             params=resolved_params,
             artifacts=context.artifacts.to_list(),
         )
+        task_context = replace(context, task_id=node.id)
 
         try:
-            return await operation.execute(context, inputs)
+            return await operation.execute(task_context, inputs)
         except Exception as exc:
             return NodeResult(
                 status=NodeStatus.FAILED,
                 error_message=f"Unhandled exception during operation execution: {exc}",
+                stderr=traceback.format_exc(),
             )
 
     async def execute_stage(
@@ -137,7 +143,9 @@ class StageExecutor:
         running_tasks: dict[str, asyncio.Task[NodeResult]] = {}
         task_to_node: dict[asyncio.Task[NodeResult], Node] = {}
 
-        while len(completed_nodes) + len(failed_nodes) + len(skipped_nodes) < len(graph.nodes):
+        while len(completed_nodes) + len(failed_nodes) + len(skipped_nodes) < len(
+            graph.nodes
+        ):
             # Find nodes that are ready to run or skip
             progress_made = False
 

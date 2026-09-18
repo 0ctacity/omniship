@@ -10,6 +10,7 @@ permissions:
   contents: read
 jobs:
   prepare:
+    name: Check · Prepare
     runs-on: ubuntu-24.04
     steps:
     - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -17,21 +18,25 @@ jobs:
     - run: uv sync --all-groups --locked
     - run: uv run omniship generate --check
   check-ruff:
+    name: Check · Ruff
     needs: prepare
     runs-on: ubuntu-slim
     steps:
     - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
     - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4
     - run: uv sync --all-groups --locked
-    - run: uv run omniship run-node --stage check --node ruff --config omniship.yaml
+    - name: Run Ruff
+      run: uv run omniship run-node --stage check --node ruff --config omniship.yaml
   check-pytest:
+    name: Check · Pytest
     needs: prepare
     runs-on: ${{ matrix.runner }}
     steps:
     - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
     - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4
     - run: uv sync --all-groups --locked
-    - run: uv run omniship run-node --stage check --node pytest --config omniship.yaml
+    - name: Run Pytest
+      run: uv run omniship run-node --stage check --node pytest --config omniship.yaml
     strategy:
       fail-fast: false
       matrix:
@@ -40,6 +45,7 @@ jobs:
         - macos-15
         - windows-2025
   check-complete:
+    name: Check complete
     needs:
     - check-ruff
     - check-pytest

@@ -64,6 +64,7 @@ class GithubReleaseOperation:
             {**os.environ, **context.env},
             context.artifacts.to_list(),
             context.inputs,
+            context.emit_log,
         )
         notes = "auto" if cfg.generate_notes else cfg.body
         try:

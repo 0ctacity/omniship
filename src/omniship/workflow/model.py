@@ -5,6 +5,7 @@ from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
+from omniship.core.logging import Logging
 from omniship.core.stage import Stage
 
 from .errors import WorkflowError
@@ -60,6 +61,7 @@ class StageBuilder:
         execution: Any = None,
     ) -> Any:
         if item is None:
+
             def decorator(function: Callable[[Any], Any]) -> Callable[[Any], Any]:
                 return self._pipeline._add_imperative_task(
                     self.stage,
@@ -89,7 +91,12 @@ class StageBuilder:
 
 
 class Pipeline:
-    def __init__(self, *, targets: Iterable[Any] = ()) -> None:
+    def __init__(
+        self,
+        *,
+        targets: Iterable[Any] = (),
+        logging: Logging | None = None,
+    ) -> None:
         self._entries: dict[Stage, list[BlockDeclaration | TaskDeclaration]] = {
             stage: [] for stage in Stage
         }
@@ -97,14 +104,23 @@ class Pipeline:
         self._task_refs: dict[Callable[[Any], Any], NodeRef] = {}
         self._task_callables: dict[tuple[Stage, str], Callable[[Any], Any]] = {}
         self.targets = tuple(targets)
+        if logging is not None and not isinstance(logging, Logging):
+            raise TypeError("logging must be a Logging value")
+        self.logging = logging or Logging()
 
-    def check(self, definition: Callable[[StageBuilder], Any]) -> Callable[[StageBuilder], Any]:
+    def check(
+        self, definition: Callable[[StageBuilder], Any]
+    ) -> Callable[[StageBuilder], Any]:
         return self._define_stage(Stage.CHECK, definition)
 
-    def build(self, definition: Callable[[StageBuilder], Any]) -> Callable[[StageBuilder], Any]:
+    def build(
+        self, definition: Callable[[StageBuilder], Any]
+    ) -> Callable[[StageBuilder], Any]:
         return self._define_stage(Stage.BUILD, definition)
 
-    def ship(self, definition: Callable[[StageBuilder], Any]) -> Callable[[StageBuilder], Any]:
+    def ship(
+        self, definition: Callable[[StageBuilder], Any]
+    ) -> Callable[[StageBuilder], Any]:
         return self._define_stage(Stage.SHIP, definition)
 
     def entries(self, stage: Stage) -> tuple[BlockDeclaration | TaskDeclaration, ...]:
@@ -181,7 +197,9 @@ class Pipeline:
         try:
             return self._task_refs[value]
         except (KeyError, TypeError) as exc:
-            raise WorkflowError("after must reference a registered task or node") from exc
+            raise WorkflowError(
+                "after must reference a registered task or node"
+            ) from exc
 
     @staticmethod
     def _block_name(block: Any) -> str:

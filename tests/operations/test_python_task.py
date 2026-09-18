@@ -4,6 +4,7 @@ import pytest
 
 from omniship.core.artifact import Artifact
 from omniship.core.context import ExecutionContext
+from omniship.core.logging import LogLevel, LogRecord
 from omniship.core.node import NodeInputs
 from omniship.core.stage import Stage
 from omniship.operations.python_task import PythonTaskOperation
@@ -30,6 +31,41 @@ async def test_python_task_executes_and_collects_artifacts(tmp_path: Path) -> No
     assert result.is_success
     assert result.stdout == "built wheel"
     assert [artifact.name for artifact in result.artifacts] == ["dist.whl"]
+
+
+@pytest.mark.asyncio
+async def test_python_task_emits_optional_structured_logs(tmp_path: Path) -> None:
+    workflow = tmp_path / "workflow.py"
+    workflow.write_text(
+        "def check(ctx):\n"
+        "    ctx.log.debug('details')\n"
+        "    ctx.log.info('checking')\n"
+        "    ctx.log.warning('careful')\n"
+        "    ctx.log.error('reported but not failed')\n",
+        encoding="utf-8",
+    )
+    records: list[LogRecord] = []
+    context = ExecutionContext(
+        workspace_root=tmp_path,
+        stage=Stage.CHECK,
+        task_id="custom-check",
+        log_sink=records.append,
+    )
+
+    result = await PythonTaskOperation().execute(
+        context,
+        NodeInputs(params={"callable": "workflow.py:check"}),
+    )
+
+    assert result.is_success
+    assert [record.level for record in records] == [
+        LogLevel.DEBUG,
+        LogLevel.INFO,
+        LogLevel.WARNING,
+        LogLevel.ERROR,
+    ]
+    assert all(record.stage == Stage.CHECK for record in records)
+    assert all(record.task == "custom-check" for record in records)
 
 
 @pytest.mark.asyncio

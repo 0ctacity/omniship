@@ -36,7 +36,9 @@ def run_pipeline(
     # 2. Locate config
     path = Path(config_path) if config_path else find_config_file()
     if not path or not path.is_file():
-        console.print("[bold red]Error:[/bold red] No omniship.yaml configuration file found.")
+        console.print(
+            "[bold red]Error:[/bold red] No omniship.yaml configuration file found."
+        )
         return 1
 
     # 3. Load & validate configuration
@@ -53,10 +55,12 @@ def run_pipeline(
     except RuntimeInputError as exc:
         console.print(f"[bold red]Input Error:[/bold red] {exc}")
         return 1
+    ui = TerminalUI(console=console, logging=config.logging)
     context = ExecutionContext(
         workspace_root=workspace_root,
         stage=stages_to_run[0],
         inputs=runtime_inputs,
+        log_sink=ui.emit,
     )
     if artifact_import_path:
         try:
@@ -68,7 +72,6 @@ def run_pipeline(
             console.print(f"[bold red]Artifact Import Error:[/bold red] {exc}")
             return 1
 
-    ui = TerminalUI(console=console)
     executor = StageExecutor(registry=registry, listeners=[ui])
 
     async def _execute() -> bool:
@@ -97,7 +100,9 @@ def run_pipeline(
         if Stage.SHIP in stages_to_run:
             console.print("\n[bold green]Shipped successfully![/bold green]")
         else:
-            console.print(f"\n[bold green]{stages_to_run[-1].value.capitalize()} completed successfully![/bold green]")
+            console.print(
+                f"\n[bold green]{stages_to_run[-1].value.capitalize()} completed successfully![/bold green]"
+            )
         return 0
     else:
         return 1
@@ -115,11 +120,13 @@ def run_node(
     registry = load_plugins()
     path = Path(config_path) if config_path else find_config_file()
     if not path or not path.is_file():
-        console.print("[bold red]Error:[/bold red] No omniship.yaml configuration file found.")
+        console.print(
+            "[bold red]Error:[/bold red] No omniship.yaml configuration file found."
+        )
         return 1
 
     try:
-        _, graphs = load_and_validate(path, registry)
+        config, graphs = load_and_validate(path, registry)
     except Exception as exc:
         console.print(f"[bold red]Configuration Error:[/bold red] {exc}")
         return 1
@@ -137,10 +144,12 @@ def run_node(
     except RuntimeInputError as exc:
         console.print(f"[bold red]Input Error:[/bold red] {exc}")
         return 1
+    ui = TerminalUI(console=console, logging=config.logging)
     context = ExecutionContext(
         workspace_root=workspace_root,
         stage=stage,
         inputs=runtime_inputs,
+        log_sink=ui.emit,
     )
     if artifact_import_root:
         try:
@@ -155,7 +164,6 @@ def run_node(
     selected = replace(graph.nodes[node_id], dependencies=frozenset())
     selected_graph = StageGraph(stage=stage)
     selected_graph.add_node(selected)
-    ui = TerminalUI(console=console)
     executor = StageExecutor(registry=registry, listeners=[ui])
     success = asyncio.run(executor.execute_stage(selected_graph, context))
     if not success:

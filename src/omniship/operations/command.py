@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field
 from omniship.core.artifact import Artifact
 from omniship.core.context import ExecutionContext
 from omniship.core.node import NodeInputs
+from omniship.core.process import stream_process
 from omniship.core.result import NodeResult, NodeStatus
 from omniship.core.stage import Stage
 from omniship.plugins.metadata import OperationDefinition
@@ -57,9 +58,7 @@ class CommandOperation:
             )
 
         working_dir = (
-            context.workspace_root / cfg.cwd
-            if cfg.cwd
-            else context.workspace_root
+            context.workspace_root / cfg.cwd if cfg.cwd else context.workspace_root
         )
         working_dir = working_dir.resolve()
 
@@ -85,38 +84,30 @@ class CommandOperation:
                     stderr=asyncio.subprocess.PIPE,
                 )
 
-            if cfg.timeout:
-                try:
-                    stdout_bytes, stderr_bytes = await asyncio.wait_for(
-                        proc.communicate(),
-                        timeout=cfg.timeout,
-                    )
-                except TimeoutError:
-                    try:
-                        proc.kill()
-                    except ProcessLookupError:
-                        pass
-                    await proc.wait()
-                    duration = time.monotonic() - start_time
-                    return NodeResult(
-                        status=NodeStatus.FAILED,
-                        duration=duration,
-                        error_message=f"Command timed out after {cfg.timeout}s",
-                    )
-            else:
-                stdout_bytes, stderr_bytes = await proc.communicate()
+            output = await stream_process(proc, context, timeout=cfg.timeout)
 
             duration = time.monotonic() - start_time
-            stdout = stdout_bytes.decode("utf-8", errors="replace")
-            stderr = stderr_bytes.decode("utf-8", errors="replace")
+            stdout = output.stdout
+            stderr = output.stderr
 
-            if proc.returncode != 0:
+            if output.timed_out:
                 return NodeResult(
                     status=NodeStatus.FAILED,
                     duration=duration,
                     stdout=stdout,
                     stderr=stderr,
-                    error_message=f"Command failed with exit code {proc.returncode}",
+                    error_message=f"Command timed out after {cfg.timeout}s",
+                )
+
+            if output.return_code != 0:
+                return NodeResult(
+                    status=NodeStatus.FAILED,
+                    duration=duration,
+                    stdout=stdout,
+                    stderr=stderr,
+                    error_message=(
+                        f"Command failed with exit code {output.return_code}"
+                    ),
                 )
 
             # Validate artifacts

@@ -12,7 +12,7 @@ from omniship.plugins.python.wheels import publish_staged_wheels
 from omniship.runtime.context import TaskFailure
 
 if TYPE_CHECKING:
-    from omniship.runtime.context import TaskContext
+    from omniship.runtime.context import TaskContext, TaskLog
 
 
 @dataclass(frozen=True)
@@ -37,19 +37,34 @@ class ProjectTools:
 class PythonTools:
     workspace_root: Path
     env: Mapping[str, str]
+    log: TaskLog | None = None
 
     def _run(self, arguments: list[str]) -> subprocess.CompletedProcess[str]:
-        process = subprocess.run(
+        process = subprocess.Popen(
             arguments,
             cwd=self.workspace_root,
             env=dict(self.env),
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
             text=True,
-            check=False,
+            bufsize=1,
         )
-        if process.returncode != 0:
-            raise TaskFailure(process.stderr.strip() or "Python tool failed")
-        return process
+        output: list[str] = []
+        assert process.stdout is not None
+        for line in process.stdout:
+            output.append(line)
+            if self.log is not None:
+                self.log.output(line.rstrip("\r\n"))
+        return_code = process.wait()
+        stdout = "".join(output)
+        if return_code != 0:
+            raise TaskFailure(stdout.strip() or "Python tool failed")
+        return subprocess.CompletedProcess(
+            arguments,
+            return_code,
+            stdout=stdout,
+            stderr="",
+        )
 
     def pytest(self) -> None:
         self._run([sys.executable, "-m", "pytest"])
@@ -91,5 +106,5 @@ class Python(PythonTools):
     """Typed Python capability facade for an imperative task context."""
 
     def __init__(self, context: TaskContext) -> None:
-        super().__init__(context.workspace, context.env)
+        super().__init__(context.workspace, context.env, context.log)
         self.project = ProjectTools(context.workspace)

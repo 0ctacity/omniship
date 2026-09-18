@@ -6,6 +6,7 @@ import inspect
 import os
 import sys
 import time
+import traceback
 from pathlib import Path
 
 from pydantic import BaseModel, Field
@@ -41,6 +42,7 @@ class PythonTaskOperation:
                 {**os.environ, **context.env},
                 context.artifacts.to_list(),
                 context.inputs,
+                context.emit_log,
             )
             if inspect.iscoroutinefunction(function):
                 await function(task_context)
@@ -57,6 +59,7 @@ class PythonTaskOperation:
                 status=NodeStatus.FAILED,
                 duration=time.monotonic() - started,
                 error_message=f"{type(exc).__name__}: {exc}",
+                stderr=traceback.format_exc(),
             )
 
     @staticmethod

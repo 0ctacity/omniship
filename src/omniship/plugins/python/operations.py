@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field, model_validator
 from omniship.core.artifact import Artifact
 from omniship.core.context import ExecutionContext
 from omniship.core.node import NodeInputs
+from omniship.core.process import stream_process
 from omniship.core.result import NodeResult, NodeStatus
 from omniship.core.stage import Stage
 from omniship.plugins.metadata import OperationDefinition
@@ -47,11 +48,11 @@ async def _execute_tool(
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )
-    stdout_bytes, stderr_bytes = await process.communicate()
+    output = await stream_process(process, context)
     return (
-        process.returncode or 0,
-        stdout_bytes.decode("utf-8", errors="replace"),
-        stderr_bytes.decode("utf-8", errors="replace"),
+        output.return_code,
+        output.stdout,
+        output.stderr,
     )
 
 
@@ -60,7 +61,9 @@ class RuffOperation:
     stages = frozenset({Stage.CHECK})
     cacheable = False
 
-    async def execute(self, context: ExecutionContext, inputs: NodeInputs) -> NodeResult:
+    async def execute(
+        self, context: ExecutionContext, inputs: NodeInputs
+    ) -> NodeResult:
         started = time.monotonic()
         try:
             config = RuffConfig.model_validate(inputs.params)
@@ -77,7 +80,9 @@ class PytestOperation:
     stages = frozenset({Stage.CHECK})
     cacheable = False
 
-    async def execute(self, context: ExecutionContext, inputs: NodeInputs) -> NodeResult:
+    async def execute(
+        self, context: ExecutionContext, inputs: NodeInputs
+    ) -> NodeResult:
         started = time.monotonic()
         try:
             config = PytestConfig.model_validate(inputs.params)
@@ -96,7 +101,9 @@ class WheelOperation:
     stages = frozenset({Stage.BUILD})
     cacheable = False
 
-    async def execute(self, context: ExecutionContext, inputs: NodeInputs) -> NodeResult:
+    async def execute(
+        self, context: ExecutionContext, inputs: NodeInputs
+    ) -> NodeResult:
         started = time.monotonic()
         try:
             config = WheelConfig.model_validate(inputs.params)

@@ -8,8 +8,10 @@ permissions:
   contents: read
 jobs:
   build:
+    name: Build
     uses: ./.github/workflows/build.yml
   ship-github-release:
+    name: Ship · GitHub Release
     needs: build
     permissions:
       contents: write
@@ -22,10 +24,12 @@ jobs:
       with:
         pattern: omniship-build-*
         path: .omniship/imports
-    - run: uv run omniship run-node --stage ship --node github-release --config omniship.yaml --import-artifacts-root .omniship/imports
+    - name: Run GitHub Release
+      run: uv run omniship run-node --stage ship --node github-release --config omniship.yaml --import-artifacts-root .omniship/imports
       env:
         GITHUB_TOKEN: ${{ github.token }}
   ship-complete:
+    name: Ship complete
     needs: ship-github-release
     runs-on: ubuntu-24.04
     steps:

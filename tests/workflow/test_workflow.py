@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from omniship import Pipeline
+from omniship import Logging, LogLevel, Pipeline
 from omniship.plugins.github import GitHubActions, GitHubRelease, GitHubRunner
 from omniship.plugins.python import Pytest, Ruff, Wheel
 from omniship.workflow.compiler import compile_pipeline
@@ -58,6 +58,27 @@ def test_stage_functions_compile_typed_blocks(tmp_path: Path) -> None:
     assert config.ship["github-release"].with_["tag"] == "v1.2.3"
 
 
+def test_pipeline_logging_configuration_is_compiled(tmp_path: Path) -> None:
+    pipeline = Pipeline(
+        logging=Logging(
+            level=LogLevel.DEBUG,
+            show_output=False,
+            timestamps=True,
+        )
+    )
+
+    config = compile_pipeline(pipeline, tmp_path / "workflow.py")
+    rendered = serialize_config(config, source_name="workflow.py")
+
+    assert config.logging.level == LogLevel.DEBUG
+    assert config.logging.show_output is False
+    assert config.logging.timestamps is True
+    assert "logging:" in rendered
+    assert "level: debug" in rendered
+    assert "show_output: false" in rendered
+    assert "timestamps: true" in rendered
+
+
 def test_nested_imperative_tasks_compile_with_dependencies(tmp_path: Path) -> None:
     pipeline = Pipeline()
 
@@ -80,9 +101,7 @@ def test_execution_placement_applies_to_blocks_and_imperative_tasks(
 ) -> None:
     github = GitHubActions(default_runner=GitHubRunner.UBUNTU_24_04)
     lint_job = github.job(runners=[GitHubRunner.UBUNTU_SLIM])
-    test_job = github.job(
-        runners=[GitHubRunner.UBUNTU_24_04, GitHubRunner.MACOS_15]
-    )
+    test_job = github.job(runners=[GitHubRunner.UBUNTU_24_04, GitHubRunner.MACOS_15])
     pipeline = Pipeline(targets=[github])
 
     @pipeline.check

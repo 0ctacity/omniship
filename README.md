@@ -359,6 +359,49 @@ This is optional. `GitHubRelease()` without a `tag` keeps the default behavior:
 OmniShip reads the project version from `pyproject.toml` and releases
 `v<version>`.
 
+### Logging
+
+Logging is automatic. OmniShip prints stage and task lifecycle events, streams
+built-in command output while the task is running, labels concurrent output by
+task, reports durations, and includes errors automatically. Generated GitHub
+Actions workflows also use readable job and step names; task warnings and
+errors become GitHub annotations.
+
+Imperative tasks can add structured messages when useful. Ordinary `print()`
+also remains visible:
+
+```python
+@pipeline.build
+def build(stage):
+    @stage.task
+    def package(ctx):
+        ctx.log.debug("Resolved build configuration")
+        ctx.log.info("Building wheel")
+        ctx.log.warning("Using compatibility mode")
+        # ctx.log.error(...) reports an error without failing the task.
+        # Use ctx.fail(...) when execution must stop.
+```
+
+The default is equivalent to `Logging()` and requires no configuration. A
+pipeline can adjust verbosity without changing its tasks:
+
+```python
+from omniship import LogLevel, Logging, Pipeline
+
+pipeline = Pipeline(
+    logging=Logging(
+        level=LogLevel.INFO,
+        show_output=True,
+        timestamps=False,
+    )
+)
+```
+
+`level` sets the minimum message severity (subprocess output is `INFO`),
+`show_output` controls subprocess stdout and stderr, and `timestamps` adds
+local timestamps. Lifecycle and final task status remain visible even when
+command output is hidden.
+
 Every successful Build node uploads its own OmniShip artifact bundle. A
 dependent Build node downloads its predecessors' bundles, and every Ship node
 downloads all completed Build bundles. OmniShip restores them into the normal
