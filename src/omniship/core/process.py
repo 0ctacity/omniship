@@ -1,3 +1,5 @@
+"""Async subprocess output capture with task-scoped live logging."""
+
 import asyncio
 from dataclasses import dataclass
 
@@ -7,6 +9,8 @@ from omniship.core.logging import LogLevel, LogStream
 
 @dataclass(frozen=True)
 class ProcessOutput:
+    """Captured subprocess streams and termination state."""
+
     return_code: int
     stdout: str
     stderr: str
@@ -19,6 +23,13 @@ async def stream_process(
     *,
     timeout: float | None = None,
 ) -> ProcessOutput:
+    """Wait for a process while streaming stdout and stderr into ``context``.
+
+    Output is retained for the operation result and normalized to LF line
+    endings so behavior is consistent across CI operating systems. A timeout
+    kills the process after allowing both stream readers to drain.
+    """
+
     stdout: list[str] = []
     stderr: list[str] = []
 

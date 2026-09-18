@@ -1,3 +1,5 @@
+"""Portable on-disk bundles used to hand artifacts between CI jobs."""
+
 from __future__ import annotations
 
 import json
@@ -10,6 +12,12 @@ MANIFEST_NAME = "manifest.json"
 
 
 def export_artifacts(artifacts: ArtifactSet, destination: str | Path) -> Path:
+    """Copy artifacts into ``destination`` and write a versioned manifest.
+
+    Directory artifacts containing symlinks are rejected so a bundle cannot
+    escape its declared tree when transferred or restored on another machine.
+    """
+
     bundle = Path(destination).resolve()
     items = bundle / "items"
     items.mkdir(parents=True, exist_ok=True)
@@ -27,7 +35,11 @@ def export_artifacts(artifacts: ArtifactSet, destination: str | Path) -> Path:
             target.unlink()
         if artifact.path.is_dir():
             symlink = next(
-                (candidate for candidate in artifact.path.rglob("*") if candidate.is_symlink()),
+                (
+                    candidate
+                    for candidate in artifact.path.rglob("*")
+                    if candidate.is_symlink()
+                ),
                 None,
             )
             if symlink is not None:
@@ -54,6 +66,8 @@ def export_artifacts(artifacts: ArtifactSet, destination: str | Path) -> Path:
 
 
 def import_artifacts(source: str | Path) -> ArtifactSet:
+    """Load one artifact bundle, validating its version and stored paths."""
+
     bundle = Path(source).resolve()
     manifest_path = bundle / MANIFEST_NAME
     document = json.loads(manifest_path.read_text(encoding="utf-8"))
@@ -76,6 +90,8 @@ def import_artifacts(source: str | Path) -> ArtifactSet:
 
 
 def import_artifact_bundles(source: str | Path) -> ArtifactSet:
+    """Merge every artifact bundle found recursively below ``source``."""
+
     root = Path(source).resolve()
     manifests = sorted(root.rglob(MANIFEST_NAME))
     if not manifests:

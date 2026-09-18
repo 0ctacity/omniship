@@ -1,3 +1,5 @@
+"""Per-stage directed acyclic graph construction and traversal."""
+
 from collections import defaultdict, deque
 from dataclasses import dataclass, field
 
@@ -6,16 +8,22 @@ from omniship.core.stage import Stage
 
 
 class GraphError(Exception):
+    """Base error for invalid stage graphs."""
+
     pass
 
 
 class CyclicDependencyError(GraphError):
+    """Raised when node dependencies form a cycle."""
+
     def __init__(self, cycle: list[str]):
         self.cycle = cycle
         super().__init__(f"Cyclic dependency detected: {' -> '.join(cycle)}")
 
 
 class MissingDependencyError(GraphError):
+    """Raised when a node references an identifier absent from its graph."""
+
     def __init__(self, node_id: str, missing: str):
         self.node_id = node_id
         self.missing = missing
@@ -24,11 +32,19 @@ class MissingDependencyError(GraphError):
 
 @dataclass
 class StageGraph:
+    """The nodes and dependency relationships for exactly one pipeline stage."""
+
     stage: Stage
     nodes: dict[str, Node] = field(default_factory=dict)
     _dependents: dict[str, set[str]] = field(default_factory=lambda: defaultdict(set))
 
     def add_node(self, node: Node) -> None:
+        """Add a node and index its dependents.
+
+        A node cannot be added to a graph for another stage. Node identifiers
+        are expected to be unique within the graph.
+        """
+
         if node.stage != self.stage:
             raise GraphError(
                 f"Cannot add node '{node.id}' with stage '{node.stage}' to '{self.stage}' graph"
@@ -38,6 +54,8 @@ class StageGraph:
             self._dependents[dep].add(node.id)
 
     def validate(self) -> None:
+        """Reject missing dependencies and cyclic dependency chains."""
+
         # 1. Check for missing dependencies
         for node_id, node in self.nodes.items():
             for dep in node.dependencies:
@@ -46,6 +64,7 @@ class StageGraph:
 
         # 2. Cycle detection via DFS (3-color tracking: 0=unvisited, 1=visiting, 2=visited)
         visited: dict[str, int] = {}
+
         def dfs(curr: str, path: list[str]) -> None:
             visited[curr] = 1
             for nxt in self._dependents.get(curr, set()):
@@ -63,9 +82,13 @@ class StageGraph:
                 dfs(node_id, [node_id])
 
     def get_roots(self) -> list[Node]:
+        """Return nodes that have no dependencies."""
+
         return [node for node in self.nodes.values() if not node.dependencies]
 
     def get_terminals(self) -> list[Node]:
+        """Return nodes with no downstream dependents."""
+
         return [
             node
             for node_id, node in self.nodes.items()
@@ -73,9 +96,13 @@ class StageGraph:
         ]
 
     def get_direct_dependents(self, node_id: str) -> set[str]:
+        """Return IDs of nodes that directly depend on ``node_id``."""
+
         return set(self._dependents.get(node_id, set()))
 
     def get_all_downstream(self, node_id: str) -> set[str]:
+        """Return every direct and transitive dependent of ``node_id``."""
+
         downstream = set()
         queue = deque(self._dependents.get(node_id, set()))
         while queue:
@@ -86,6 +113,8 @@ class StageGraph:
         return downstream
 
     def get_levels(self) -> list[list[str]]:
+        """Return deterministic topological levels that may run in parallel."""
+
         self.validate()
         in_degree = {n: len(node.dependencies) for n, node in self.nodes.items()}
         queue = deque([n for n, deg in in_degree.items() if deg == 0])

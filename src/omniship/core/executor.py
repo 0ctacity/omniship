@@ -1,3 +1,5 @@
+"""Concurrent execution of stage DAGs with dependency-aware skipping."""
+
 import asyncio
 import os
 import subprocess
@@ -15,13 +17,33 @@ from omniship.plugins.registry import PluginRegistry
 
 
 class ExecutorListener(Protocol):
-    def on_stage_start(self, stage: Stage, graph: StageGraph) -> None: ...
-    def on_node_start(self, stage: Stage, node: Node) -> None: ...
-    def on_node_finish(self, stage: Stage, node: Node, result: NodeResult) -> None: ...
-    def on_stage_finish(self, stage: Stage, success: bool) -> None: ...
+    """Observer notified synchronously as execution changes state."""
+
+    def on_stage_start(self, stage: Stage, graph: StageGraph) -> None:
+        """Handle the start of a stage graph."""
+        ...
+
+    def on_node_start(self, stage: Stage, node: Node) -> None:
+        """Handle a node immediately before it is scheduled."""
+        ...
+
+    def on_node_finish(self, stage: Stage, node: Node, result: NodeResult) -> None:
+        """Handle a node after its result has reached a terminal state."""
+        ...
+
+    def on_stage_finish(self, stage: Stage, success: bool) -> None:
+        """Handle stage completion after all runnable nodes settle."""
+        ...
 
 
 def evaluate_condition(condition: Any, context: ExecutionContext) -> bool:
+    """Evaluate the compact condition forms accepted by configuration nodes.
+
+    Strings support booleans, the special ``tag`` predicate, and environment
+    variable presence. Mappings support exact environment matches and branch
+    selection, using Git metadata as a local fallback.
+    """
+
     if condition is None:
         return True
     if isinstance(condition, str):
@@ -71,15 +93,26 @@ def evaluate_condition(condition: Any, context: ExecutionContext) -> bool:
 
 
 class StageExecutor:
+    """Execute nodes concurrently when their dependencies are satisfied.
+
+    Failures skip only their downstream dependency chain; unrelated branches
+    continue. Pipeline execution adds a strict barrier between stage graphs and
+    stops before the next stage if the current stage fails.
+    """
+
     def __init__(
         self,
         registry: PluginRegistry,
         listeners: list[ExecutorListener] | None = None,
     ) -> None:
+        """Create an executor backed by a plugin operation registry."""
+
         self.registry = registry
         self.listeners = listeners or []
 
     def add_listener(self, listener: ExecutorListener) -> None:
+        """Register an execution observer."""
+
         self.listeners.append(listener)
 
     async def execute_node(
@@ -87,6 +120,8 @@ class StageExecutor:
         node: Node,
         context: ExecutionContext,
     ) -> NodeResult:
+        """Resolve and execute one node, converting exceptions into failures."""
+
         if not self.registry.has_operation(node.operation_name):
             return NodeResult(
                 status=NodeStatus.FAILED,
@@ -127,6 +162,8 @@ class StageExecutor:
         graph: StageGraph,
         context: ExecutionContext,
     ) -> bool:
+        """Run one validated DAG until every node succeeds, fails, or skips."""
+
         graph.validate()
 
         for listener in self.listeners:
@@ -270,6 +307,8 @@ class StageExecutor:
         graphs: list[StageGraph],
         context: ExecutionContext,
     ) -> bool:
+        """Execute stage graphs sequentially, stopping at the first failure."""
+
         for graph in graphs:
             context.stage = graph.stage
             success = await self.execute_stage(graph, context)

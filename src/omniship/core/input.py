@@ -1,3 +1,5 @@
+"""Runtime workflow-input references and recursive value resolution."""
+
 import json
 from collections.abc import Mapping
 from typing import Any
@@ -7,14 +9,24 @@ RUNTIME_INPUTS_ENV = "OMNISHIP_INPUTS"
 
 
 class RuntimeInputError(ValueError):
+    """Raised when runtime workflow inputs are missing or malformed."""
+
     pass
 
 
 def runtime_input_reference(name: str) -> dict[str, str]:
+    """Create the serializable marker used to defer an input until execution."""
+
     return {INPUT_REFERENCE_KEY: name}
 
 
 def resolve_runtime_inputs(value: Any, inputs: Mapping[str, Any]) -> Any:
+    """Recursively replace input markers while preserving container types.
+
+    A mapping is treated as a reference only when its sole key is
+    :data:`INPUT_REFERENCE_KEY`; ordinary mappings are traversed normally.
+    """
+
     if isinstance(value, dict):
         if set(value) == {INPUT_REFERENCE_KEY}:
             name = value[INPUT_REFERENCE_KEY]
@@ -36,6 +48,8 @@ def resolve_runtime_inputs(value: Any, inputs: Mapping[str, Any]) -> Any:
 
 
 def load_runtime_inputs(env: Mapping[str, str]) -> dict[str, Any]:
+    """Load workflow inputs from the JSON object in ``OMNISHIP_INPUTS``."""
+
     raw = env.get(RUNTIME_INPUTS_ENV)
     if not raw:
         return {}

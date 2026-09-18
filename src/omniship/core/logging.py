@@ -1,3 +1,5 @@
+"""Provider-neutral structured logging models and level filtering."""
+
 from __future__ import annotations
 
 from collections.abc import Callable
@@ -8,6 +10,8 @@ from omniship.core.stage import Stage
 
 
 class LogLevel(StrEnum):
+    """Severity assigned to an OmniShip log record."""
+
     DEBUG = "debug"
     INFO = "info"
     WARNING = "warning"
@@ -15,6 +19,8 @@ class LogLevel(StrEnum):
 
 
 class LogStream(StrEnum):
+    """Origin of a log message."""
+
     LOG = "log"
     STDOUT = "stdout"
     STDERR = "stderr"
@@ -22,6 +28,8 @@ class LogStream(StrEnum):
 
 @dataclass(frozen=True)
 class Logging:
+    """User-facing logging behavior for generated and local workflows."""
+
     level: LogLevel = LogLevel.INFO
     show_output: bool = True
     timestamps: bool = False
@@ -37,6 +45,8 @@ class Logging:
 
 @dataclass(frozen=True)
 class LogRecord:
+    """A structured message attributed to a pipeline stage and task."""
+
     stage: Stage
     task: str
     level: LogLevel
@@ -56,4 +66,6 @@ _LEVEL_RANK = {
 
 
 def includes_level(configured: LogLevel, emitted: LogLevel) -> bool:
+    """Return whether ``emitted`` meets the configured severity threshold."""
+
     return _LEVEL_RANK[emitted] >= _LEVEL_RANK[configured]
