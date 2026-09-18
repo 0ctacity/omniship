@@ -47,3 +47,41 @@ async def test_command_streams_output_before_process_finishes(tmp_path: Path) ->
     assert result.is_success
     assert result.stdout == "first\nsecond\n"
     assert [record.message for record in records] == ["first", "second"]
+
+
+@pytest.mark.asyncio
+async def test_command_normalizes_crlf_output(tmp_path: Path) -> None:
+    records: list[LogRecord] = []
+    context = ExecutionContext(
+        workspace_root=tmp_path,
+        stage=Stage.CHECK,
+        task_id="crlf",
+        log_sink=records.append,
+    )
+
+    result = await CommandOperation().execute(
+        context,
+        NodeInputs(
+            params={
+                "run": [
+                    sys.executable,
+                    "-c",
+                    (
+                        "import sys; "
+                        "sys.stdout.buffer.write(b'first\\r\\nsecond\\r\\n'); "
+                        "sys.stderr.buffer.write(b'warning\\r\\n')"
+                    ),
+                ]
+            }
+        ),
+    )
+
+    assert result.is_success
+    assert result.stdout == "first\nsecond\n"
+    assert result.stderr == "warning\n"
+    assert [
+        record.message for record in records if record.stream is LogStream.STDOUT
+    ] == ["first", "second"]
+    assert [
+        record.message for record in records if record.stream is LogStream.STDERR
+    ] == ["warning"]

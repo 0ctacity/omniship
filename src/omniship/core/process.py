@@ -30,7 +30,7 @@ async def stream_process(
         if reader is None:
             return
         while chunk := await reader.readline():
-            text = chunk.decode("utf-8", errors="replace")
+            text = chunk.decode("utf-8", errors="replace").replace("\r\n", "\n")
             destination.append(text)
             context.emit_log(LogLevel.INFO, text.rstrip("\r\n"), stream)
 
