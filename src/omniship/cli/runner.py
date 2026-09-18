@@ -1,4 +1,5 @@
 import asyncio
+import os
 from dataclasses import replace
 from pathlib import Path
 
@@ -14,6 +15,7 @@ from omniship.core.artifact_bundle import (
 from omniship.core.context import ExecutionContext
 from omniship.core.executor import StageExecutor
 from omniship.core.graph import StageGraph
+from omniship.core.input import RuntimeInputError, load_runtime_inputs
 from omniship.core.stage import Stage
 from omniship.plugins.discovery import load_plugins
 
@@ -46,9 +48,15 @@ def run_pipeline(
 
     # 4. Set up context and executor
     workspace_root = path.parent.resolve()
+    try:
+        runtime_inputs = load_runtime_inputs(os.environ)
+    except RuntimeInputError as exc:
+        console.print(f"[bold red]Input Error:[/bold red] {exc}")
+        return 1
     context = ExecutionContext(
         workspace_root=workspace_root,
         stage=stages_to_run[0],
+        inputs=runtime_inputs,
     )
     if artifact_import_path:
         try:
@@ -124,7 +132,16 @@ def run_node(
         return 1
 
     workspace_root = path.parent.resolve()
-    context = ExecutionContext(workspace_root=workspace_root, stage=stage)
+    try:
+        runtime_inputs = load_runtime_inputs(os.environ)
+    except RuntimeInputError as exc:
+        console.print(f"[bold red]Input Error:[/bold red] {exc}")
+        return 1
+    context = ExecutionContext(
+        workspace_root=workspace_root,
+        stage=stage,
+        inputs=runtime_inputs,
+    )
     if artifact_import_root:
         try:
             source = Path(artifact_import_root)

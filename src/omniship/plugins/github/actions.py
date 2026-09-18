@@ -8,7 +8,7 @@ from typing import ClassVar
 
 import yaml
 
-from omniship.config.models import OmniShipConfig
+from omniship.config.models import NodeConfig, OmniShipConfig
 from omniship.core.stage import Stage
 from omniship.plugins.api import GeneratedFile
 from omniship.workflow.model import Pipeline
@@ -160,6 +160,234 @@ class GitHubJob:
             raise TypeError("permissions must be a GitHubPermissions value")
 
 
+def _normalize_trigger_values(
+    values: Iterable[str], *, field_name: str
+) -> tuple[str, ...]:
+    if isinstance(values, str):
+        raise TypeError(f"{field_name} must be an iterable of strings")
+    normalized = tuple(values)
+    if any(not isinstance(value, str) or not value for value in normalized):
+        raise TypeError(f"{field_name} must contain non-empty strings")
+    return normalized
+
+
+@dataclass(frozen=True)
+class GitHubPush:
+    branches: Iterable[str] = ()
+    branches_ignore: Iterable[str] = ()
+    tags: Iterable[str] = ()
+    tags_ignore: Iterable[str] = ()
+    paths: Iterable[str] = ()
+    paths_ignore: Iterable[str] = ()
+    event: ClassVar[str] = "push"
+
+    def __post_init__(self) -> None:
+        for field_name in (
+            "branches",
+            "branches_ignore",
+            "tags",
+            "tags_ignore",
+            "paths",
+            "paths_ignore",
+        ):
+            object.__setattr__(
+                self,
+                field_name,
+                _normalize_trigger_values(
+                    getattr(self, field_name), field_name=field_name
+                ),
+            )
+        self._reject_conflicting_filters("branches", "branches_ignore")
+        self._reject_conflicting_filters("tags", "tags_ignore")
+        self._reject_conflicting_filters("paths", "paths_ignore")
+
+    def _reject_conflicting_filters(self, include: str, exclude: str) -> None:
+        if getattr(self, include) and getattr(self, exclude):
+            raise ValueError(f"GitHub push cannot use both {include} and {exclude}")
+
+    def to_document(self) -> dict[str, object]:
+        return _trigger_filters_document(self)
+
+
+@dataclass(frozen=True)
+class GitHubPullRequest:
+    branches: Iterable[str] = ()
+    branches_ignore: Iterable[str] = ()
+    paths: Iterable[str] = ()
+    paths_ignore: Iterable[str] = ()
+    types: Iterable[str] = ()
+    event: ClassVar[str] = "pull_request"
+
+    def __post_init__(self) -> None:
+        for field_name in (
+            "branches",
+            "branches_ignore",
+            "paths",
+            "paths_ignore",
+            "types",
+        ):
+            object.__setattr__(
+                self,
+                field_name,
+                _normalize_trigger_values(
+                    getattr(self, field_name), field_name=field_name
+                ),
+            )
+        self._reject_conflicting_filters("branches", "branches_ignore")
+        self._reject_conflicting_filters("paths", "paths_ignore")
+
+    def _reject_conflicting_filters(self, include: str, exclude: str) -> None:
+        if getattr(self, include) and getattr(self, exclude):
+            raise ValueError(
+                f"GitHub pull request cannot use both {include} and {exclude}"
+            )
+
+    def to_document(self) -> dict[str, object]:
+        return _trigger_filters_document(self)
+
+
+@dataclass(frozen=True)
+class GitHubStringInput:
+    name: str
+    description: str | None = None
+    required: bool = False
+    default: str | None = None
+
+    def __post_init__(self) -> None:
+        _validate_workflow_input(self.name, self.description, self.required)
+        if self.default is not None and not isinstance(self.default, str):
+            raise TypeError("GitHub string input default must be a string")
+
+    def to_document(self) -> dict[str, object]:
+        return _workflow_input_document(self, input_type="string")
+
+
+@dataclass(frozen=True)
+class GitHubBooleanInput:
+    name: str
+    description: str | None = None
+    required: bool = False
+    default: bool | None = None
+
+    def __post_init__(self) -> None:
+        _validate_workflow_input(self.name, self.description, self.required)
+        if self.default is not None and not isinstance(self.default, bool):
+            raise TypeError("GitHub boolean input default must be a boolean")
+
+    def to_document(self) -> dict[str, object]:
+        return _workflow_input_document(self, input_type="boolean")
+
+
+GitHubInput = GitHubStringInput | GitHubBooleanInput
+
+
+def _validate_workflow_input(
+    name: str,
+    description: str | None,
+    required: bool,
+) -> None:
+    if not isinstance(name, str) or not name:
+        raise TypeError("GitHub workflow input name must be a non-empty string")
+    if description is not None and not isinstance(description, str):
+        raise TypeError("GitHub workflow input description must be a string")
+    if not isinstance(required, bool):
+        raise TypeError("GitHub workflow input required must be a boolean")
+
+
+def _workflow_input_document(
+    workflow_input: GitHubInput,
+    *,
+    input_type: str,
+) -> dict[str, object]:
+    document: dict[str, object] = {}
+    if workflow_input.description is not None:
+        document["description"] = workflow_input.description
+    if workflow_input.required:
+        document["required"] = True
+    if workflow_input.default is not None:
+        document["default"] = workflow_input.default
+    document["type"] = input_type
+    return document
+
+
+@dataclass(frozen=True)
+class GitHubWorkflowDispatch:
+    inputs: Iterable[GitHubInput] = ()
+    event: ClassVar[str] = "workflow_dispatch"
+
+    def __post_init__(self) -> None:
+        if isinstance(self.inputs, (str, bytes)):
+            raise TypeError("GitHub workflow inputs must be typed input values")
+        inputs = tuple(self.inputs)
+        if any(
+            not isinstance(workflow_input, (GitHubStringInput, GitHubBooleanInput))
+            for workflow_input in inputs
+        ):
+            raise TypeError("GitHub workflow inputs must be typed input values")
+        names = [workflow_input.name for workflow_input in inputs]
+        if len(set(names)) != len(names):
+            raise ValueError("GitHub workflow inputs must have unique names")
+        if len(inputs) > 25:
+            raise ValueError("GitHub workflow dispatch supports at most 25 inputs")
+        object.__setattr__(self, "inputs", inputs)
+
+    def to_document(self) -> dict[str, object]:
+        if not self.inputs:
+            return {}
+        return {
+            "inputs": {
+                workflow_input.name: workflow_input.to_document()
+                for workflow_input in self.inputs
+            }
+        }
+
+
+GitHubTrigger = GitHubPush | GitHubPullRequest | GitHubWorkflowDispatch
+
+
+def _trigger_filters_document(trigger: object) -> dict[str, object]:
+    document: dict[str, object] = {}
+    for field_info in fields(trigger):
+        values = getattr(trigger, field_info.name)
+        if values:
+            document[field_info.name.replace("_", "-")] = list(values)
+    return document
+
+
+@dataclass(frozen=True)
+class GitHubWorkflow:
+    file: str
+    name: str
+    triggers: Iterable[GitHubTrigger] | None = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.file, str) or not self.file:
+            raise TypeError("GitHub workflow file must be a non-empty string")
+        if "/" in self.file or "\\" in self.file:
+            raise ValueError("GitHub workflow file must be a filename")
+        if Path(self.file).suffix not in {".yml", ".yaml"}:
+            raise ValueError("GitHub workflow file must end in .yml or .yaml")
+        if not isinstance(self.name, str) or not self.name:
+            raise TypeError("GitHub workflow name must be a non-empty string")
+        if self.triggers is None:
+            return
+        if isinstance(self.triggers, (str, bytes)):
+            raise TypeError("GitHub workflow triggers must be typed trigger values")
+        triggers = tuple(self.triggers)
+        if any(
+            not isinstance(
+                trigger,
+                (GitHubPush, GitHubPullRequest, GitHubWorkflowDispatch),
+            )
+            for trigger in triggers
+        ):
+            raise TypeError("GitHub workflow triggers must be typed trigger values")
+        events = [trigger.event for trigger in triggers]
+        if len(set(events)) != len(events):
+            raise ValueError("GitHub workflow cannot contain duplicate trigger types")
+        object.__setattr__(self, "triggers", triggers)
+
+
 @dataclass(frozen=True)
 class GitHubActions:
     name: ClassVar[str] = "github/actions"
@@ -167,12 +395,21 @@ class GitHubActions:
     default_permissions: GitHubPermissions = GitHubPermissions(
         contents=GitHubPermission.READ
     )
+    check: GitHubWorkflow = GitHubWorkflow(file="check.yml", name="Check")
+    build: GitHubWorkflow = GitHubWorkflow(file="build.yml", name="Build")
+    ship: GitHubWorkflow = GitHubWorkflow(file="ship.yml", name="Ship")
 
     def __post_init__(self) -> None:
         if not isinstance(self.default_runner, GitHubRunner):
             raise TypeError("default_runner must be a GitHubRunner value")
         if not isinstance(self.default_permissions, GitHubPermissions):
             raise TypeError("default_permissions must be a GitHubPermissions value")
+        workflows = (self.check, self.build, self.ship)
+        if any(not isinstance(workflow, GitHubWorkflow) for workflow in workflows):
+            raise TypeError("check, build, and ship must be GitHubWorkflow values")
+        filenames = [workflow.file.casefold() for workflow in workflows]
+        if len(set(filenames)) != len(filenames):
+            raise ValueError("GitHub workflow files must be unique")
 
     @property
     def default_job(self) -> GitHubJob:
@@ -185,9 +422,7 @@ class GitHubActions:
         fail_fast: bool = False,
         permissions: GitHubPermissions | None = None,
     ) -> GitHubJob:
-        selected_runners = (
-            (self.default_runner,) if runners is None else tuple(runners)
-        )
+        selected_runners = (self.default_runner,) if runners is None else tuple(runners)
         return GitHubJob(
             selected_runners,
             fail_fast=fail_fast,
@@ -205,7 +440,9 @@ class GitHubActionsGenerator:
         config_path: Path,
         pipeline: Pipeline,
     ) -> tuple[GeneratedFile, ...]:
-        targets = [target for target in pipeline.targets if isinstance(target, GitHubActions)]
+        targets = [
+            target for target in pipeline.targets if isinstance(target, GitHubActions)
+        ]
         if len(targets) > 1:
             raise ValueError("Pipeline has more than one GitHub Actions target")
         has_release_block = any(
@@ -218,7 +455,7 @@ class GitHubActionsGenerator:
         workspace_root = source_path.parent.resolve()
         source = source_path.resolve().relative_to(workspace_root)
         pipeline_config = config_path.resolve().relative_to(workspace_root)
-        destination = workspace_root / ".github" / "workflows" / "release.yml"
+        workflow_root = workspace_root / ".github" / "workflows"
         generate_command = ["uv", "run", "omniship", "generate"]
         if source != Path("workflow.py"):
             generate_command.extend(["--workflow-file", source.as_posix()])
@@ -233,44 +470,44 @@ class GitHubActionsGenerator:
                 {"run": "uv sync --all-groups --locked"},
             ]
 
-        stage_configs = {
-            Stage.CHECK: config.check,
-            Stage.BUILD: config.build,
-            Stage.SHIP: config.ship,
-        }
-        job_ids: dict[tuple[Stage, str], str] = {}
-        used_job_ids: set[str] = set()
-        for stage, nodes in stage_configs.items():
-            for node_name in nodes:
-                normalized = re.sub(r"[^a-zA-Z0-9_-]+", "-", node_name).strip("-").lower()
-                job_id = f"{stage.value}-{normalized}"
-                if job_id in used_job_ids:
-                    raise ValueError(
-                        f"GitHub Actions job id collision for node '{node_name}': {job_id}"
-                    )
-                used_job_ids.add(job_id)
-                job_ids[(stage, node_name)] = job_id
-
-        jobs: dict[str, dict[str, object]] = {
-            "prepare": {
+        def prepare_job() -> dict[str, object]:
+            return {
                 "runs-on": actions.default_runner.value,
                 "steps": [
                     *setup_steps(),
                     {"run": shlex.join(generate_command)},
                 ],
             }
-        }
 
-        previous_barrier = "prepare"
-        for stage, nodes in stage_configs.items():
+        def stage_jobs(
+            stage: Stage,
+            nodes: dict[str, NodeConfig],
+            *,
+            root_dependency: str,
+            has_runtime_inputs: bool,
+        ) -> dict[str, dict[str, object]]:
+            job_ids: dict[str, str] = {}
+            used_job_ids: set[str] = set()
+            for node_name in nodes:
+                normalized = (
+                    re.sub(r"[^a-zA-Z0-9_-]+", "-", node_name).strip("-").lower()
+                )
+                job_id = f"{stage.value}-{normalized}"
+                if job_id in used_job_ids:
+                    raise ValueError(
+                        f"GitHub Actions job id collision for node "
+                        f"'{node_name}': {job_id}"
+                    )
+                used_job_ids.add(job_id)
+                job_ids[node_name] = job_id
+
             depended_on = {
-                dependency
-                for node in nodes.values()
-                for dependency in node.needs
+                dependency for node in nodes.values() for dependency in node.needs
             }
+            generated_jobs: dict[str, dict[str, object]] = {}
             terminal_job_ids: list[str] = []
             for node_name, node in nodes.items():
-                job_id = job_ids[(stage, node_name)]
+                job_id = job_ids[node_name]
                 placement = node.execution or actions.default_job
                 if not isinstance(placement, GitHubJob):
                     raise ValueError(
@@ -278,9 +515,8 @@ class GitHubActionsGenerator:
                     )
 
                 required_permissions = GitHubPermissions()
-                if (
-                    node.uses == "github/release"
-                    and not node.with_.get("dry_run", False)
+                if node.uses == "github/release" and not node.with_.get(
+                    "dry_run", False
                 ):
                     required_permissions = GitHubPermissions(
                         contents=GitHubPermission.WRITE
@@ -298,11 +534,9 @@ class GitHubActionsGenerator:
                         node_name=node_name,
                     )
 
-                dependency_jobs = [
-                    job_ids[(stage, dependency)] for dependency in node.needs
-                ]
+                dependency_jobs = [job_ids[dependency] for dependency in node.needs]
                 if not dependency_jobs:
-                    dependency_jobs = [previous_barrier]
+                    dependency_jobs = [root_dependency]
 
                 steps = setup_steps()
                 command = [
@@ -320,7 +554,7 @@ class GitHubActionsGenerator:
 
                 if stage == Stage.BUILD and node.needs:
                     for dependency in node.needs:
-                        dependency_job = job_ids[(stage, dependency)]
+                        dependency_job = job_ids[dependency]
                         steps.append(
                             {
                                 "uses": DOWNLOAD_ARTIFACT_ACTION,
@@ -349,8 +583,13 @@ class GitHubActionsGenerator:
                     command.extend(["--import-artifacts-root", ARTIFACT_IMPORT_PATH])
 
                 run_step: dict[str, object] = {"run": shlex.join(command)}
+                step_env: dict[str, str] = {}
+                if has_runtime_inputs:
+                    step_env["OMNISHIP_INPUTS"] = "${{ toJSON(inputs) }}"
                 if node.uses == "github/release" or placement.permissions is not None:
-                    run_step["env"] = {"GITHUB_TOKEN": "${{ github.token }}"}
+                    step_env["GITHUB_TOKEN"] = "${{ github.token }}"
+                if step_env:
+                    run_step["env"] = step_env
                 steps.append(run_step)
 
                 if stage == Stage.BUILD:
@@ -385,28 +624,133 @@ class GitHubActionsGenerator:
                         },
                     }
                     job["runs-on"] = "${{ matrix.runner }}"
-                jobs[job_id] = job
+                generated_jobs[job_id] = job
                 if node_name not in depended_on:
                     terminal_job_ids.append(job_id)
 
             barrier_id = f"{stage.value}-complete"
-            barrier_needs = terminal_job_ids or [previous_barrier]
-            jobs[barrier_id] = {
+            barrier_needs = terminal_job_ids or [root_dependency]
+            generated_jobs[barrier_id] = {
                 "needs": barrier_needs[0] if len(barrier_needs) == 1 else barrier_needs,
                 "runs-on": actions.default_runner.value,
                 "steps": [{"run": f"echo '{stage.value} stage complete'"}],
             }
-            previous_barrier = barrier_id
+            return generated_jobs
 
-        document = {
-            "name": "Release",
-            "on": {"push": {"tags": ["v*"]}},
-            "permissions": actions.default_permissions.to_document(),
-            "jobs": jobs,
-        }
-        rendered = yaml.safe_dump(document, sort_keys=False, width=1000)
-        content = (
-            f"# Generated by OmniShip from {source.name}. Do not edit directly.\n"
-            f"{rendered}"
+        def workflow_events(
+            workflow: GitHubWorkflow,
+            defaults: tuple[GitHubTrigger, ...],
+            *,
+            is_callable: bool,
+        ) -> dict[str, object]:
+            configured = defaults if workflow.triggers is None else workflow.triggers
+            events = {trigger.event: trigger.to_document() for trigger in configured}
+            if is_callable:
+                events["workflow_call"] = {}
+            return events
+
+        def has_runtime_inputs(
+            workflow: GitHubWorkflow,
+            defaults: tuple[GitHubTrigger, ...],
+        ) -> bool:
+            configured = defaults if workflow.triggers is None else workflow.triggers
+            return any(
+                isinstance(trigger, GitHubWorkflowDispatch) and bool(trigger.inputs)
+                for trigger in configured
+            )
+
+        check_jobs = {"prepare": prepare_job()}
+        check_jobs.update(
+            stage_jobs(
+                Stage.CHECK,
+                config.check,
+                root_dependency="prepare",
+                has_runtime_inputs=has_runtime_inputs(
+                    actions.check,
+                    (GitHubPullRequest(), GitHubPush(branches=("main",))),
+                ),
+            )
         )
-        return (GeneratedFile(destination, content),)
+        build_jobs: dict[str, dict[str, object]] = {
+            "check": {
+                "uses": f"./.github/workflows/{actions.check.file}",
+            }
+        }
+        build_jobs.update(
+            stage_jobs(
+                Stage.BUILD,
+                config.build,
+                root_dependency="check",
+                has_runtime_inputs=has_runtime_inputs(actions.build, ()),
+            )
+        )
+        ship_jobs: dict[str, dict[str, object]] = {
+            "build": {
+                "uses": f"./.github/workflows/{actions.build.file}",
+            },
+        }
+        ship_jobs.update(
+            stage_jobs(
+                Stage.SHIP,
+                config.ship,
+                root_dependency="build",
+                has_runtime_inputs=has_runtime_inputs(
+                    actions.ship,
+                    (GitHubPush(tags=("v*",)),),
+                ),
+            )
+        )
+
+        documents = (
+            (
+                actions.check,
+                {
+                    "name": actions.check.name,
+                    "on": workflow_events(
+                        actions.check,
+                        (
+                            GitHubPullRequest(),
+                            GitHubPush(branches=("main",)),
+                        ),
+                        is_callable=True,
+                    ),
+                    "permissions": actions.default_permissions.to_document(),
+                    "jobs": check_jobs,
+                },
+            ),
+            (
+                actions.build,
+                {
+                    "name": actions.build.name,
+                    "on": workflow_events(
+                        actions.build,
+                        (),
+                        is_callable=True,
+                    ),
+                    "permissions": actions.default_permissions.to_document(),
+                    "jobs": build_jobs,
+                },
+            ),
+            (
+                actions.ship,
+                {
+                    "name": actions.ship.name,
+                    "on": workflow_events(
+                        actions.ship,
+                        (GitHubPush(tags=("v*",)),),
+                        is_callable=False,
+                    ),
+                    "permissions": actions.default_permissions.to_document(),
+                    "jobs": ship_jobs,
+                },
+            ),
+        )
+        generated = []
+        for workflow, document in documents:
+            rendered = yaml.safe_dump(document, sort_keys=False, width=1000)
+            content = (
+                f"# Generated by OmniShip from {source.name}. Do not edit directly.\n"
+                f"{rendered}"
+            )
+            generated.append(GeneratedFile(workflow_root / workflow.file, content))
+        return tuple(generated)

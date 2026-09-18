@@ -4,7 +4,7 @@ import subprocess
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Mapping
+from typing import Any, Mapping
 
 from omniship.core.artifact import Artifact
 
@@ -88,11 +88,13 @@ class TaskContext:
         workspace_root: Path,
         env: Mapping[str, str],
         artifacts: Iterable[Artifact] = (),
+        inputs: Mapping[str, Any] | None = None,
     ) -> None:
         self.workspace = workspace_root.resolve()
         self.env = dict(env)
         self.log = TaskLog()
         self.artifacts = TaskArtifacts(self.workspace, tuple(artifacts))
+        self.inputs = dict(inputs or {})
         self.git = GitTools(self.workspace)
 
     def fail(self, message: str) -> None:

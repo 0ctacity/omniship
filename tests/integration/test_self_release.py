@@ -12,7 +12,10 @@ def test_omniship_self_release_is_generated_and_current() -> None:
     root = Path(__file__).parents[2]
     workflow_path = root / "workflow.py"
     config_path = root / "omniship.yaml"
-    actions_path = root / ".github" / "workflows" / "release.yml"
+    workflow_root = root / ".github" / "workflows"
+    check_path = workflow_root / "check.yml"
+    build_path = workflow_root / "build.yml"
+    ship_path = workflow_root / "ship.yml"
 
     assert workflow_path.is_file()
     pipeline = load_workflow(workflow_path)
@@ -38,9 +41,11 @@ def test_omniship_self_release_is_generated_and_current() -> None:
     )
 
     assert result.exit_code == 0, result.output
-    assert actions_path.is_file()
+    assert check_path.is_file()
+    assert build_path.is_file()
+    assert ship_path.is_file()
     actions = yaml.load(
-        actions_path.read_text(encoding="utf-8"),
+        ship_path.read_text(encoding="utf-8"),
         Loader=yaml.BaseLoader,
     )
     assert actions["on"]["push"]["tags"] == ["v*"]

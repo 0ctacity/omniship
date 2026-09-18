@@ -202,9 +202,7 @@ pipeline = Pipeline(targets=[github])
 @pipeline.build
 def build(stage):
     @stage.task(
-        execution=github.job(
-            runners=[GitHubRunner.UBUNTU_24_04, GitHubRunner.MACOS_15]
-        )
+        execution=github.job(runners=[GitHubRunner.UBUNTU_24_04, GitHubRunner.MACOS_15])
     )
     def package(ctx):
         python = Python(ctx)
@@ -246,19 +244,120 @@ omniship ship
 `omniship generate` always writes `omniship.yaml`. Installed providers may
 contribute additional generated files. A pipeline containing `GitHubRelease`,
 or an explicit `GitHubActions` target for imperative publishing, also produces
-`.github/workflows/release.yml` through the GitHub plugin.
+`.github/workflows/check.yml`, `.github/workflows/build.yml`, and
+`.github/workflows/ship.yml` through the GitHub plugin.
 
 Use `omniship generate --check` in CI to verify that every committed generated
 file matches `workflow.py`. Generation refuses to overwrite hand-authored YAML
 unless `--force` is supplied.
 
-### GitHub Actions releases
+### GitHub Actions workflows
 
-The GitHub plugin generates a tag-triggered Actions workflow with one job per
-DAG node. Nodes without explicit placement use `default_runner`; nodes with
-multiple runners use a matrix. Small barrier jobs preserve the strict
-Check → Build → Ship ordering while independent nodes in a stage still run in
-parallel.
+The GitHub plugin generates one workflow per stage. `check.yml` runs for pull
+requests and pushes to `main`, and can also be called by another workflow.
+`build.yml` is callable. The tag-triggered `ship.yml` composes both reusable
+workflows before running the Ship DAG. Nodes without explicit placement use
+`default_runner`; nodes with multiple runners use a matrix.
+
+The filenames and names shown by GitHub can be changed in `workflow.py`:
+
+```python
+from omniship.plugins.github import GitHubActions, GitHubWorkflow
+
+github = GitHubActions(
+    check=GitHubWorkflow(file="ci.yml", name="CI"),
+    build=GitHubWorkflow(file="package.yml", name="Package"),
+    ship=GitHubWorkflow(file="publish.yml", name="Publish"),
+)
+```
+
+External triggers are typed as well. Omitting `triggers` preserves the stage
+defaults; passing an empty list disables external triggers while keeping the
+internal reusable-workflow links required by later stages:
+
+```python
+from omniship.plugins.github import (
+    GitHubActions,
+    GitHubPullRequest,
+    GitHubPush,
+    GitHubWorkflow,
+    GitHubWorkflowDispatch,
+)
+
+github = GitHubActions(
+    check=GitHubWorkflow(
+        file="ci.yml",
+        name="CI",
+        triggers=[
+            GitHubPullRequest(
+                branches=["main", "develop"],
+                paths=["src/**", "tests/**"],
+            ),
+            GitHubPush(
+                branches=["main", "develop"],
+                paths_ignore=["docs/**"],
+            ),
+            GitHubWorkflowDispatch(),
+        ],
+    ),
+    build=GitHubWorkflow(
+        file="build.yml",
+        name="Build",
+        triggers=[],
+    ),
+    ship=GitHubWorkflow(
+        file="ship.yml",
+        name="Ship",
+        triggers=[GitHubPush(tags=["release-*"])],
+    ),
+)
+```
+
+Manual workflows can declare typed inputs and bind them directly to typed
+blocks. Imperative tasks read the same values from `ctx.inputs`:
+
+```python
+from omniship import Pipeline
+from omniship.plugins.github import (
+    GitHubActions,
+    GitHubBooleanInput,
+    GitHubRelease,
+    GitHubStringInput,
+    GitHubWorkflow,
+    GitHubWorkflowDispatch,
+)
+
+tag = GitHubStringInput("tag", description="Tag to release", required=True)
+prerelease = GitHubBooleanInput("prerelease", default=False)
+
+github = GitHubActions(
+    ship=GitHubWorkflow(
+        file="ship.yml",
+        name="Ship",
+        triggers=[GitHubWorkflowDispatch(inputs=[tag, prerelease])],
+    )
+)
+pipeline = Pipeline(targets=[github])
+
+
+@pipeline.ship
+def ship(stage):
+    stage.task(
+        GitHubRelease(
+            repository="owner/project",
+            tag=tag,
+            prerelease=prerelease,
+        )
+    )
+
+    @stage.task
+    def announce(ctx):
+        ctx.log.info(f"Releasing {ctx.inputs['tag']}")
+```
+
+This is optional. `GitHubRelease()` without a `tag` keeps the default behavior:
+OmniShip reads the project version from `pyproject.toml` and releases
+`v<version>`.
 
 Every successful Build node uploads its own OmniShip artifact bundle. A
 dependent Build node downloads its predecessors' bundles, and every Ship node
@@ -275,19 +374,13 @@ permissions:
   contents: read
 
 jobs:
-  check-pytest:
-    runs-on: ${{ matrix.runner }}
-    strategy:
-      matrix:
-        runner: [ubuntu-24.04, macos-15, windows-2025]
-  check-complete:
-    needs: check-pytest
-  build-wheel:
-    needs: check-complete
-  build-complete:
-    needs: build-wheel
+  check:
+    uses: ./.github/workflows/check.yml
+  build:
+    needs: check
+    uses: ./.github/workflows/build.yml
   ship-github-release:
-    needs: build-complete
+    needs: build
     permissions:
       contents: write
 ```
@@ -331,7 +424,9 @@ rejected during generation. Tasks without GitHub permissions do not receive a
 `GITHUB_TOKEN` environment variable.
 
 OmniShip uses this mechanism for its own [release definition](workflow.py),
-[compiled pipeline](omniship.yaml), and [GitHub Actions workflow](.github/workflows/release.yml).
+[compiled pipeline](omniship.yaml), and generated GitHub Actions
+[Check](.github/workflows/check.yml), [Build](.github/workflows/build.yml), and
+[Ship](.github/workflows/ship.yml) workflows.
 `github/release` fails if `GITHUB_TOKEN` is absent, except when the block
 explicitly uses `dry_run=True`. Tokens cannot be supplied through Python
 blocks or generated OmniShip YAML.

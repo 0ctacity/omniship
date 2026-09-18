@@ -5,6 +5,7 @@ from typing import Any, Protocol
 
 from omniship.core.context import ExecutionContext
 from omniship.core.graph import StageGraph
+from omniship.core.input import RuntimeInputError, resolve_runtime_inputs
 from omniship.core.node import Node, NodeInputs
 from omniship.core.result import NodeResult, NodeStatus
 from omniship.core.stage import Stage
@@ -95,8 +96,15 @@ class StageExecutor:
                 error_message=f"Operation '{node.operation_name}' cannot be run in stage '{node.stage}'",
             )
 
+        try:
+            resolved_params = resolve_runtime_inputs(dict(node.inputs), context.inputs)
+        except RuntimeInputError as exc:
+            return NodeResult(
+                status=NodeStatus.FAILED,
+                error_message=str(exc),
+            )
         inputs = NodeInputs(
-            params=dict(node.inputs),
+            params=resolved_params,
             artifacts=context.artifacts.to_list(),
         )
 

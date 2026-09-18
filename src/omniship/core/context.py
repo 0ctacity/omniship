@@ -1,5 +1,6 @@
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 from omniship.core.artifact import Artifact, ArtifactSet
 from omniship.core.result import NodeResult
@@ -12,6 +13,7 @@ class ExecutionContext:
     stage: Stage
     artifacts: ArtifactSet = field(default_factory=ArtifactSet)
     env: dict[str, str] = field(default_factory=dict)
+    inputs: dict[str, Any] = field(default_factory=dict)
     results: dict[str, NodeResult] = field(default_factory=dict)
 
     def get_artifact(self, name: str) -> Artifact | None:

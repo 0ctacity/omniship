@@ -40,6 +40,7 @@ class PythonTaskOperation:
                 context.workspace_root,
                 {**os.environ, **context.env},
                 context.artifacts.to_list(),
+                context.inputs,
             )
             if inspect.iscoroutinefunction(function):
                 await function(task_context)

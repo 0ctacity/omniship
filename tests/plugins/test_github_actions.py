@@ -2,9 +2,15 @@ import pytest
 
 from omniship.plugins.github import (
     GitHubActions,
+    GitHubBooleanInput,
     GitHubPermission,
     GitHubPermissions,
+    GitHubPullRequest,
+    GitHubPush,
     GitHubRunner,
+    GitHubStringInput,
+    GitHubWorkflow,
+    GitHubWorkflowDispatch,
 )
 
 
@@ -68,6 +74,98 @@ def test_github_actions_uses_read_only_defaults_and_job_permission_overrides() -
         "contents": "write",
         "packages": "write",
     }
+
+
+def test_github_actions_uses_stage_workflow_defaults() -> None:
+    actions = GitHubActions()
+
+    assert actions.check == GitHubWorkflow(file="check.yml", name="Check")
+    assert actions.build == GitHubWorkflow(file="build.yml", name="Build")
+    assert actions.ship == GitHubWorkflow(file="ship.yml", name="Ship")
+
+
+def test_github_actions_rejects_duplicate_stage_workflow_files() -> None:
+    duplicate = GitHubWorkflow(file="pipeline.yml", name="Pipeline")
+
+    with pytest.raises(ValueError, match="must be unique"):
+        GitHubActions(check=duplicate, build=duplicate)
+
+
+@pytest.mark.parametrize("filename", ["workflow", "nested/check.yml", "../check.yml"])
+def test_github_workflow_rejects_invalid_filename(filename: str) -> None:
+    with pytest.raises(ValueError, match="workflow file"):
+        GitHubWorkflow(file=filename, name="Check")
+
+
+def test_github_workflow_normalizes_typed_triggers() -> None:
+    workflow = GitHubWorkflow(
+        file="ci.yml",
+        name="CI",
+        triggers=[
+            GitHubPullRequest(branches=["main"]),
+            GitHubPush(branches=["main", "develop"]),
+            GitHubWorkflowDispatch(),
+        ],
+    )
+
+    assert workflow.triggers == (
+        GitHubPullRequest(branches=("main",)),
+        GitHubPush(branches=("main", "develop")),
+        GitHubWorkflowDispatch(),
+    )
+
+
+def test_github_workflow_dispatch_renders_typed_inputs() -> None:
+    dispatch = GitHubWorkflowDispatch(
+        inputs=[
+            GitHubStringInput(
+                "tag",
+                description="Tag to release",
+                required=True,
+            ),
+            GitHubBooleanInput("prerelease", default=False),
+        ]
+    )
+
+    assert dispatch.to_document() == {
+        "inputs": {
+            "tag": {
+                "description": "Tag to release",
+                "required": True,
+                "type": "string",
+            },
+            "prerelease": {
+                "default": False,
+                "type": "boolean",
+            },
+        }
+    }
+
+
+def test_github_workflow_dispatch_rejects_duplicate_input_names() -> None:
+    with pytest.raises(ValueError, match="unique names"):
+        GitHubWorkflowDispatch(
+            inputs=[GitHubStringInput("version"), GitHubBooleanInput("version")]
+        )
+
+
+def test_github_workflow_input_rejects_default_of_wrong_type() -> None:
+    with pytest.raises(TypeError, match="string input default"):
+        GitHubStringInput("tag", default=False)  # type: ignore[arg-type]
+
+
+def test_github_workflow_rejects_duplicate_trigger_types() -> None:
+    with pytest.raises(ValueError, match="duplicate trigger"):
+        GitHubWorkflow(
+            file="ci.yml",
+            name="CI",
+            triggers=[GitHubPush(branches=["main"]), GitHubPush(tags=["v*"])],
+        )
+
+
+def test_github_push_rejects_conflicting_filters() -> None:
+    with pytest.raises(ValueError, match="branches and branches_ignore"):
+        GitHubPush(branches=["main"], branches_ignore=["legacy"])
 
 
 def test_github_actions_rejects_empty_node_runner_list() -> None:
