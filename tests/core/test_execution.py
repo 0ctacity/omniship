@@ -8,6 +8,7 @@ from omniship.core.execution import (
     ExecutionHost,
     OperatingSystem,
     SecretRef,
+    load_execution_revision,
 )
 from omniship.runtime.context import TaskContext
 
@@ -70,3 +71,12 @@ def test_cache_spec_normalizes_paths_and_restore_keys() -> None:
 
     with pytest.raises(ValueError, match="path"):
         CacheSpec(paths=[], key="cargo")
+    with pytest.raises(TypeError, match="paths"):
+        CacheSpec(paths="target", key="cargo")
+    with pytest.raises(TypeError, match="restore_keys"):
+        CacheSpec(paths=["target"], key="cargo", restore_keys="cargo-")
+
+
+def test_execution_revision_uses_the_provider_neutral_environment_name() -> None:
+    assert load_execution_revision({"OMNISHIP_REVISION": "abc123"}) == "abc123"
+    assert load_execution_revision({}) is None

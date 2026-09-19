@@ -12,6 +12,12 @@ major = 10
 version = "v10.1.0"
 sha = "bec219d24cd3e171d82865faccec33120bb574f4"
 
+[github.actions.cache]
+repository = "actions/cache"
+major = 6
+version = "v6.1.0"
+sha = "55cc8345863c7cc4c66a329aec7e433d2d1c52a9"
+
 [github.actions.upload-artifact]
 repository = "actions/upload-artifact"
 major = 4

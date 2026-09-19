@@ -88,6 +88,36 @@ class GitHubRelease:
 
 
 @dataclass(frozen=True)
+class GitHubTag:
+    repository: str | None = None
+    tag: str | GitHubStringInput | None = None
+    target: str | None = None
+    force: bool = False
+    dry_run: bool = False
+    name: str = "github-tag"
+
+    def compile(self, stage: Stage, workspace_root: Path) -> list[NodeSpec]:
+        if stage != Stage.SHIP:
+            raise WorkflowError("GitHubTag can only be used in the ship stage")
+        tag: object
+        if isinstance(self.tag, GitHubStringInput):
+            tag = runtime_input_reference(self.tag.name)
+        else:
+            tag = self.tag or f"v{_project_version(workspace_root)}"
+        params: dict[str, object] = {
+            "repository": self.repository or _github_repository(workspace_root),
+            "tag": tag,
+        }
+        if self.target:
+            params["target"] = self.target
+        if self.force:
+            params["force"] = True
+        if self.dry_run:
+            params["dry_run"] = True
+        return [NodeSpec(self.name, stage, "github/tag", params)]
+
+
+@dataclass(frozen=True)
 class GitHubPages:
     artifact: str = "site"
     name: str = "github-pages"

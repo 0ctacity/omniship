@@ -9,7 +9,9 @@ from omniship.plugins.github import (
     GitHubPages,
     GitHubRelease,
     GitHubRunner,
+    GitHubTag,
 )
+from omniship.plugins.packaging import Sha256Manifest, TarGz, Zip
 from omniship.plugins.python import Pytest, Ruff, Wheel
 from omniship.workflow.compiler import compile_pipeline
 from omniship.workflow.errors import WorkflowError
@@ -98,6 +100,48 @@ def test_github_pages_compiles_as_a_ship_block(tmp_path: Path) -> None:
 
     assert config.ship["github-pages"].uses == "github/pages"
     assert config.ship["github-pages"].with_ == {"artifact": "docs-site"}
+
+
+def test_github_tag_compiles_as_a_ship_block(tmp_path: Path) -> None:
+    pipeline = Pipeline()
+
+    @pipeline.ship
+    def ship(stage):
+        stage.task(GitHubTag(repository="0ctacity/omniship", tag="v1.2.3"))
+
+    config = compile_pipeline(pipeline, tmp_path / "workflow.py")
+
+    assert config.ship["github-tag"].uses == "github/tag"
+    assert config.ship["github-tag"].with_ == {
+        "repository": "0ctacity/omniship",
+        "tag": "v1.2.3",
+    }
+
+
+def test_packaging_blocks_compile_as_build_nodes(tmp_path: Path) -> None:
+    pipeline = Pipeline()
+
+    @pipeline.build
+    def build(stage):
+        archive = stage.task(
+            TarGz(output="dist/demo.tar.gz", files={"build/demo": "demo"})
+        )
+        zipped = stage.task(
+            Zip(output="dist/demo.zip", files={"build/demo": "demo"})
+        )
+        stage.task(
+            Sha256Manifest(
+                output="dist/SHA256SUMS.txt",
+                artifacts=["demo-tar-gz", "demo-zip"],
+            ),
+            after=[archive, zipped],
+        )
+
+    config = compile_pipeline(pipeline, tmp_path / "workflow.py")
+
+    assert config.build["demo-tar-gz"].uses == "packaging/tar-gz"
+    assert config.build["demo-zip"].uses == "packaging/zip"
+    assert config.build["sha256-manifest"].uses == "packaging/sha256-manifest"
 
 
 def test_github_pages_is_rejected_outside_ship(tmp_path: Path) -> None:

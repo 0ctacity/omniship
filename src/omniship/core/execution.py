@@ -6,7 +6,9 @@ import platform
 import re
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Iterable
+from typing import Iterable, Mapping
+
+REVISION_ENV = "OMNISHIP_REVISION"
 
 
 class OperatingSystem(StrEnum):
@@ -88,14 +90,30 @@ class CacheSpec:
         key: str,
         restore_keys: Iterable[str] = (),
     ) -> None:
+        if isinstance(paths, (str, bytes)):
+            raise TypeError("cache paths must be an iterable of strings")
+        if isinstance(restore_keys, (str, bytes)):
+            raise TypeError("cache restore_keys must be an iterable of strings")
         normalized_paths = tuple(paths)
         normalized_restore_keys = tuple(restore_keys)
-        if not normalized_paths or any(not path for path in normalized_paths):
+        if not normalized_paths or any(
+            not isinstance(path, str) or not path for path in normalized_paths
+        ):
             raise ValueError("cache requires at least one non-empty path")
-        if not key:
+        if not isinstance(key, str) or not key:
             raise ValueError("cache key cannot be empty")
-        if any(not restore_key for restore_key in normalized_restore_keys):
+        if any(
+            not isinstance(restore_key, str) or not restore_key
+            for restore_key in normalized_restore_keys
+        ):
             raise ValueError("cache restore keys cannot be empty")
         object.__setattr__(self, "paths", normalized_paths)
         object.__setattr__(self, "key", key)
         object.__setattr__(self, "restore_keys", normalized_restore_keys)
+
+
+def load_execution_revision(env: Mapping[str, str]) -> str | None:
+    """Read the source revision supplied by an execution target, if present."""
+
+    revision = env.get(REVISION_ENV)
+    return revision or None

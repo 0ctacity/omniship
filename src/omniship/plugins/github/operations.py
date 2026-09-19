@@ -12,7 +12,7 @@ from omniship.plugins.metadata import OperationDefinition
 from omniship.plugins.registry import PluginRegistry
 from omniship.runtime import TaskContext
 
-from .actions import GitHubActionsGenerator
+from .actions import GitHubActionsGenerator, GitHubCheckout, GitHubWorkflowArtifacts
 from .runtime import GitHub
 
 
@@ -52,6 +52,7 @@ class GithubPagesOperation:
             context.artifacts.to_list(),
             context.inputs,
             context.emit_log,
+            host=context.host,
         )
         try:
             pages = await asyncio.to_thread(
@@ -98,6 +99,70 @@ class GithubReleaseConfig(BaseModel):
     )
 
 
+class GithubTagConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    repository: str = Field(..., description="GitHub repository in owner/repo form")
+    tag: str = Field(..., min_length=1, description="Git tag name")
+    target: str | None = Field(default=None, description="Git object SHA")
+    force: bool = Field(default=False, description="Replace an existing tag")
+    dry_run: bool = Field(default=False, description="Simulate tag creation")
+
+
+class GithubTagOperation:
+    name: str = "github/tag"
+    stages: frozenset[Stage] = frozenset({Stage.SHIP})
+    cacheable: bool = False
+
+    async def execute(
+        self,
+        context: ExecutionContext,
+        inputs: NodeInputs,
+    ) -> NodeResult:
+        start_time = time.monotonic()
+        try:
+            cfg = GithubTagConfig.model_validate(inputs.params)
+        except Exception as exc:
+            return NodeResult(
+                status=NodeStatus.FAILED,
+                duration=time.monotonic() - start_time,
+                error_message=f"Invalid github/tag configuration: {exc}",
+            )
+        task_context = TaskContext(
+            context.workspace_root,
+            {**os.environ, **context.env},
+            context.artifacts.to_list(),
+            context.inputs,
+            context.emit_log,
+            host=context.host,
+        )
+        try:
+            result = await asyncio.to_thread(
+                GitHub(task_context).tag,
+                repository=cfg.repository,
+                tag=cfg.tag,
+                target=cfg.target,
+                force=cfg.force,
+                dry_run=cfg.dry_run,
+            )
+        except Exception as exc:
+            return NodeResult(
+                status=NodeStatus.FAILED,
+                duration=time.monotonic() - start_time,
+                error_message=str(exc),
+            )
+        return NodeResult(
+            status=NodeStatus.SUCCESS,
+            duration=time.monotonic() - start_time,
+            stdout="\n".join(task_context.log.lines),
+            outputs={
+                "repository": result.repository,
+                "tag": result.tag,
+                "target": result.target,
+            },
+        )
+
+
 class GithubReleaseOperation:
     name: str = "github/release"
     stages: frozenset[Stage] = frozenset({Stage.SHIP})
@@ -124,6 +189,7 @@ class GithubReleaseOperation:
             context.artifacts.to_list(),
             context.inputs,
             context.emit_log,
+            host=context.host,
         )
         notes = "auto" if cfg.generate_notes else cfg.body
         try:
@@ -177,6 +243,16 @@ def get_github_pages_definition() -> OperationDefinition:
     )
 
 
+def get_github_tag_definition() -> OperationDefinition:
+    return OperationDefinition(
+        name=GithubTagOperation.name,
+        stages=GithubTagOperation.stages,
+        description="Create or update a GitHub tag",
+        config_model=GithubTagConfig,
+        cacheable=False,
+    )
+
+
 def register_github_plugin(registry: PluginRegistry) -> None:
     registry.register_operation(
         GithubPagesOperation(),
@@ -186,4 +262,18 @@ def register_github_plugin(registry: PluginRegistry) -> None:
         GithubReleaseOperation(),
         get_github_definition(),
     )
-    registry.register_workflow_generator(GitHubActionsGenerator())
+    registry.register_operation(
+        GithubTagOperation(),
+        get_github_tag_definition(),
+    )
+    registry.register_requirement_resolver(
+        "github/actions",
+        GitHubCheckout,
+        lambda requirement: requirement,
+    )
+    registry.register_requirement_resolver(
+        "github/actions",
+        GitHubWorkflowArtifacts,
+        lambda requirement: requirement,
+    )
+    registry.register_workflow_generator(GitHubActionsGenerator(registry))

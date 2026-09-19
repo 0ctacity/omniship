@@ -175,6 +175,28 @@ def test_artifact_bundle_root_merges_parallel_build_outputs(tmp_path: Path) -> N
     assert {artifact.name for artifact in restored} == {"linux.whl", "macos.whl"}
 
 
+def test_artifact_bundle_import_rejects_mixed_or_unexpected_revisions(
+    tmp_path: Path,
+) -> None:
+    imports = tmp_path / "imports"
+    for name, revision in (("linux.whl", "abc123"), ("macos.whl", "other")):
+        source = tmp_path / name
+        source.write_text(name, encoding="utf-8")
+        artifacts = ArtifactSet()
+        artifacts.add(
+            Artifact.from_path(
+                source,
+                provenance=ArtifactProvenance(revision=revision),
+            )
+        )
+        export_artifacts(artifacts, imports / name)
+
+    with pytest.raises(ValueError, match="mixed producing revisions"):
+        import_artifact_bundles(imports)
+    with pytest.raises(ValueError, match="expected revision 'expected'"):
+        import_artifacts(imports / "linux.whl", expected_revision="expected")
+
+
 def test_node_result():
     res_success = NodeResult(status=NodeStatus.SUCCESS, duration=1.5)
     assert res_success.is_success
@@ -248,3 +270,28 @@ def test_artifact_set_requires_an_exact_named_set(tmp_path: Path) -> None:
         artifacts.require(["linux", "windows"])
     with pytest.raises(ValueError, match="Unexpected artifacts: macos"):
         artifacts.require(["linux"], exact=True)
+
+    duplicate = tmp_path / "duplicate"
+    duplicate.touch()
+    artifacts.add(Artifact.from_path(duplicate, name="linux"))
+    with pytest.raises(ValueError, match="Duplicate artifacts: linux"):
+        artifacts.require(["linux", "macos"], exact=True)
+
+
+def test_artifact_set_requires_consistent_producing_revision(tmp_path: Path) -> None:
+    artifacts = ArtifactSet()
+    for name, revision in (("linux", "abc123"), ("macos", "other")):
+        path = tmp_path / name
+        path.touch()
+        artifacts.add(
+            Artifact.from_path(
+                path,
+                name=name,
+                provenance=ArtifactProvenance(revision=revision),
+            )
+        )
+
+    with pytest.raises(ValueError, match="mixed producing revisions"):
+        artifacts.require(["linux", "macos"], consistent_revision=True)
+    with pytest.raises(ValueError, match="expected revision 'abc123'"):
+        artifacts.require(["macos"], revision="abc123")

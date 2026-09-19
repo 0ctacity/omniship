@@ -3,7 +3,10 @@ from pathlib import Path
 import yaml
 from click.testing import CliRunner
 
+from omniship.cli import runner as cli_runner
 from omniship.cli.app import cli
+from omniship.core.artifact import ArtifactSet
+from omniship.core.stage import Stage
 
 WORKFLOW = """\
 from omniship import Pipeline
@@ -47,6 +50,41 @@ def ship(stage):
         GitHubRelease(repository="octacity/demo", tag="v1.0.0"),
     )
 """
+
+
+def test_run_node_uses_reviewed_source_revision_for_imports(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    config = tmp_path / "omniship.yaml"
+    imports = tmp_path / "imports"
+    imports.mkdir()
+    config.write_text(
+        "version: 1\ncheck:\n  verify:\n    uses: core/noop\n",
+        encoding="utf-8",
+    )
+    revisions: list[str | None] = []
+
+    def import_bundles(path: Path, *, expected_revision: str | None):
+        revisions.append(expected_revision)
+        return ArtifactSet()
+
+    monkeypatch.setattr(cli_runner, "import_artifact_bundles", import_bundles)
+    monkeypatch.setenv("OMNISHIP_REVISION", "current-revision")
+    monkeypatch.setenv(
+        "OMNISHIP_EXPECTED_ARTIFACT_REVISION",
+        "source-revision",
+    )
+
+    result = cli_runner.run_node(
+        Stage.CHECK,
+        "verify",
+        config_path=str(config),
+        artifact_import_root=str(imports),
+    )
+
+    assert result == 0
+    assert revisions == ["source-revision"]
 
 
 def test_generate_writes_valid_yaml_and_check_detects_drift(tmp_path: Path) -> None:
@@ -143,6 +181,7 @@ def test_generate_writes_valid_yaml_and_check_detects_drift(tmp_path: Path) -> N
             "uv run omniship run-node --stage build --node wheel "
             "--config omniship.yaml --export-artifacts .omniship/handoff/build-wheel"
         ),
+        "env": {"OMNISHIP_REVISION": "${{ github.sha }}"},
     } in build_job["steps"]
     assert {
         "uses": "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02",
@@ -165,7 +204,10 @@ def test_generate_writes_valid_yaml_and_check_detects_drift(tmp_path: Path) -> N
             "uv run omniship run-node --stage ship --node github-release "
             "--config omniship.yaml --import-artifacts-root .omniship/imports"
         ),
-        "env": {"GITHUB_TOKEN": "${{ github.token }}"},
+        "env": {
+            "OMNISHIP_REVISION": "${{ github.sha }}",
+            "GITHUB_TOKEN": "${{ github.token }}",
+        },
     } in ship_job["steps"]
     current = runner.invoke(
         cli,
@@ -194,6 +236,179 @@ def test_generate_writes_valid_yaml_and_check_detects_drift(tmp_path: Path) -> N
     )
     assert drifted.exit_code == 1
     assert "out of date" in drifted.output
+
+
+def test_generate_compiles_job_controls_secrets_and_caches(tmp_path: Path) -> None:
+    source = tmp_path / "workflow.py"
+    output = tmp_path / "omniship.yaml"
+    source.write_text(
+        "from omniship import Pipeline\n"
+        "from omniship.plugins.github import GitHubActions, GitHubShell\n"
+        "github = GitHubActions()\n"
+        "pipeline = Pipeline(targets=[github])\n"
+        "@pipeline.build\n"
+        "def build(stage):\n"
+        "    @stage.task(execution=github.job(\n"
+        "        timeout_minutes=30,\n"
+        "        environment='quality',\n"
+        "        working_directory='packages/cli',\n"
+        "        shell=GitHubShell.BASH,\n"
+        "        env={'MODE': 'strict', 'API_TOKEN': github.secret('API_TOKEN')},\n"
+        "        caches=[github.cache(\n"
+        "            paths=['~/.cache/demo', 'build'],\n"
+        "            key=['demo', github.runner_os, github.hash_files('**/lock')],\n"
+        "            restore_prefixes=['demo-${{ runner.os }}-', 'demo-'],\n"
+        "        )],\n"
+        "    ))\n"
+        "    def verify(ctx):\n"
+        "        pass\n",
+        encoding="utf-8",
+    )
+
+    generated = CliRunner().invoke(
+        cli,
+        ["generate", "-f", str(source), "-o", str(output)],
+    )
+
+    assert generated.exit_code == 0, generated.output
+    document = yaml.load(
+        (tmp_path / ".github" / "workflows" / "build.yml").read_text(
+            encoding="utf-8"
+        ),
+        Loader=yaml.BaseLoader,
+    )
+    job = document["jobs"]["build-verify"]
+    assert job["timeout-minutes"] == "30"
+    assert job["environment"] == "quality"
+    cache_step = job["steps"][3]
+    assert cache_step == {
+        "name": "Restore cache 1",
+        "uses": "actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9",
+        "with": {
+            "path": "~/.cache/demo\nbuild",
+            "key": "demo-${{ runner.os }}-${{ hashFiles('**/lock') }}",
+            "restore-keys": "demo-${{ runner.os }}-\ndemo-",
+        },
+    }
+    run_step = job["steps"][4]
+    assert "--working-directory packages/cli" in run_step["run"]
+    assert "working-directory" not in run_step
+    assert run_step["shell"] == "bash"
+    assert run_step["env"] == {
+        "MODE": "strict",
+        "API_TOKEN": "${{ secrets.API_TOKEN }}",
+        "OMNISHIP_REVISION": "${{ github.sha }}",
+    }
+
+
+def test_generate_compiles_external_checkout_requirements(tmp_path: Path) -> None:
+    source = tmp_path / "workflow.py"
+    output = tmp_path / "omniship.yaml"
+    source.write_text(
+        "from omniship import Pipeline\n"
+        "from omniship.plugins.github import GitHubActions\n"
+        "github = GitHubActions()\n"
+        "pipeline = Pipeline(targets=[github])\n"
+        "@pipeline.check\n"
+        "def check(stage):\n"
+        "    @stage.task(requires=[github.checkout(\n"
+        "        repository='ata-sesli/zova',\n"
+        "        ref='0123456789abcdef',\n"
+        "        path='.deps/zova',\n"
+        "        token=github.secret('ZOVA_TOKEN'),\n"
+        "    )])\n"
+        "    def verify(ctx):\n"
+        "        pass\n",
+        encoding="utf-8",
+    )
+
+    generated = CliRunner().invoke(
+        cli,
+        ["generate", "-f", str(source), "-o", str(output)],
+    )
+
+    assert generated.exit_code == 0, generated.output
+    document = yaml.load(
+        (tmp_path / ".github" / "workflows" / "check.yml").read_text(
+            encoding="utf-8"
+        ),
+        Loader=yaml.BaseLoader,
+    )
+    checkout = document["jobs"]["check-verify"]["steps"][3]
+    assert checkout == {
+        "name": "Check out ata-sesli/zova",
+        "uses": "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+        "with": {
+            "repository": "ata-sesli/zova",
+            "ref": "0123456789abcdef",
+            "path": ".deps/zova",
+            "persist-credentials": "false",
+            "fetch-depth": "1",
+            "submodules": "false",
+            "token": "${{ secrets.ZOVA_TOKEN }}",
+        },
+    }
+
+
+def test_generate_compiles_os_specific_system_packages(tmp_path: Path) -> None:
+    source = tmp_path / "workflow.py"
+    output = tmp_path / "omniship.yaml"
+    source.write_text(
+        "from omniship import Pipeline\n"
+        "from omniship.plugins.github import GitHubActions, GitHubRunner\n"
+        "from omniship.plugins.system import SystemPackages\n"
+        "github = GitHubActions()\n"
+        "pipeline = Pipeline(targets=[github])\n"
+        "@pipeline.check\n"
+        "def check(stage):\n"
+        "    @stage.task(\n"
+        "        requires=[SystemPackages(\n"
+        "            ubuntu=['zlib1g-dev'], macos=['zlib'], windows=['zlib'],\n"
+        "        )],\n"
+        "        execution=github.job(runners=[\n"
+        "            GitHubRunner.UBUNTU_24_04,\n"
+        "            GitHubRunner.MACOS_15,\n"
+        "            GitHubRunner.WINDOWS_2025,\n"
+        "        ]),\n"
+        "    )\n"
+        "    def native(ctx):\n"
+        "        pass\n",
+        encoding="utf-8",
+    )
+
+    generated = CliRunner().invoke(
+        cli,
+        ["generate", "-f", str(source), "-o", str(output)],
+    )
+
+    assert generated.exit_code == 0, generated.output
+    document = yaml.load(
+        (tmp_path / ".github" / "workflows" / "check.yml").read_text(
+            encoding="utf-8"
+        ),
+        Loader=yaml.BaseLoader,
+    )
+    steps = document["jobs"]["check-native"]["steps"]
+    assert steps[3:6] == [
+        {
+            "name": "Install Ubuntu system packages",
+            "if": "runner.os == 'Linux'",
+            "run": (
+                "sudo apt-get update && sudo apt-get install -y "
+                "--no-install-recommends zlib1g-dev"
+            ),
+        },
+        {
+            "name": "Install macOS system packages",
+            "if": "runner.os == 'macOS'",
+            "run": "brew install zlib",
+        },
+        {
+            "name": "Install Windows system packages",
+            "if": "runner.os == 'Windows'",
+            "run": "choco install zlib -y --no-progress",
+        },
+    ]
 
 
 def test_generate_protects_hand_authored_yaml(tmp_path: Path) -> None:
@@ -440,7 +655,7 @@ def test_ship_task_without_github_permissions_does_not_receive_token(
     )
     run_step = actions["jobs"]["ship-publish"]["steps"][-1]
 
-    assert "env" not in run_step
+    assert run_step["env"] == {"OMNISHIP_REVISION": "${{ github.sha }}"}
 
 
 def test_run_node_executes_only_the_selected_imperative_task(tmp_path: Path) -> None:
@@ -479,6 +694,46 @@ def test_run_node_executes_only_the_selected_imperative_task(tmp_path: Path) -> 
     assert executed.exit_code == 0, executed.output
     assert (tmp_path / "first.txt").read_text(encoding="utf-8") == "first"
     assert not (tmp_path / "second.txt").exists()
+
+
+def test_run_node_scopes_the_task_workspace_to_a_subdirectory(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "workflow.py"
+    output = tmp_path / "omniship.yaml"
+    package = tmp_path / "packages" / "cli"
+    package.mkdir(parents=True)
+    source.write_text(
+        "from omniship import Pipeline\n"
+        "pipeline = Pipeline()\n"
+        "@pipeline.check\n"
+        "def check(stage):\n"
+        "    @stage.task\n"
+        "    def locate(ctx):\n"
+        "        (ctx.workspace / 'cwd.txt').write_text(str(ctx.workspace))\n",
+        encoding="utf-8",
+    )
+    runner = CliRunner()
+    generated = runner.invoke(cli, ["generate", "-f", str(source), "-o", str(output)])
+    assert generated.exit_code == 0, generated.output
+
+    executed = runner.invoke(
+        cli,
+        [
+            "run-node",
+            "--stage",
+            "check",
+            "--node",
+            "locate",
+            "--config",
+            str(output),
+            "--working-directory",
+            "packages/cli",
+        ],
+    )
+
+    assert executed.exit_code == 0, executed.output
+    assert (package / "cwd.txt").read_text(encoding="utf-8") == str(package)
 
 
 def test_build_node_dependencies_download_predecessor_artifacts(
@@ -536,6 +791,7 @@ def test_build_node_dependencies_download_predecessor_artifacts(
             "--config omniship.yaml --import-artifacts-root .omniship/imports "
             "--export-artifacts .omniship/handoff/build-package"
         ),
+        "env": {"OMNISHIP_REVISION": "${{ github.sha }}"},
     } in package_job["steps"]
 
 

@@ -30,6 +30,14 @@ class ExecutionContext:
     log_sink: LogSink | None = None
     host: ExecutionHost = field(default_factory=ExecutionHost.detect)
     revision: str | None = None
+    pipeline_root: Path | None = None
+
+    def __post_init__(self) -> None:
+        self.workspace_root = self.workspace_root.resolve()
+        if self.pipeline_root is None:
+            self.pipeline_root = self.workspace_root
+        else:
+            self.pipeline_root = self.pipeline_root.resolve()
 
     def get_artifact(self, name: str) -> Artifact | None:
         """Return the first artifact matching a name or path."""

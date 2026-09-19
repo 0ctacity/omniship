@@ -27,6 +27,13 @@ class GitHubPagesResult:
     path: Path
 
 
+@dataclass(frozen=True, slots=True)
+class GitHubTagResult:
+    repository: str
+    tag: str
+    target: str
+
+
 class GitHub:
     """Typed GitHub capability facade for an imperative task context."""
 
@@ -99,6 +106,56 @@ class GitHub:
             release_url=release_url,
             uploaded_count=len(artifacts),
         )
+
+    def tag(
+        self,
+        repository: str,
+        tag: str,
+        *,
+        target: str | None = None,
+        force: bool = False,
+        dry_run: bool = False,
+    ) -> GitHubTagResult:
+        target = target or self.context.env.get("GITHUB_SHA")
+        if not target:
+            raise TaskFailure(
+                "GitHub tag target is required outside GitHub Actions"
+            )
+        token = self.context.env.get("GITHUB_TOKEN")
+        if not dry_run and not token:
+            raise TaskFailure(
+                "GITHUB_TOKEN is required for github/tag when dry_run is false"
+            )
+        if dry_run:
+            self.context.log.info("[github/tag] Simulated tag creation (dry run)")
+            self.context.log.info(f"[github/tag] Target repository: {repository}")
+            self.context.log.info(f"[github/tag] Tag: {tag} -> {target}")
+            return GitHubTagResult(repository, tag, target)
+
+        ref = f"tags/{tag}"
+        try:
+            if force:
+                request = urllib.request.Request(
+                    f"https://api.github.com/repos/{repository}/git/refs/{ref}",
+                    data=json.dumps({"sha": target, "force": True}).encode("utf-8"),
+                    headers=self._api_headers(token),
+                    method="PATCH",
+                )
+            else:
+                request = urllib.request.Request(
+                    f"https://api.github.com/repos/{repository}/git/refs",
+                    data=json.dumps(
+                        {"ref": f"refs/tags/{tag}", "sha": target}
+                    ).encode("utf-8"),
+                    headers=self._api_headers(token),
+                    method="POST",
+                )
+            with urllib.request.urlopen(request, timeout=15):
+                pass
+        except Exception as exc:
+            raise TaskFailure(f"GitHub tag creation failed: {exc}") from exc
+        self.context.log.info(f"Created GitHub tag {tag} at {target}")
+        return GitHubTagResult(repository, tag, target)
 
     def pages(self, *, artifact: str = "site") -> GitHubPagesResult:
         selected = self.context.artifacts.get(artifact)
@@ -174,6 +231,14 @@ class GitHub:
         )
         for artifact in artifacts:
             self.context.log.info(f"  - {artifact.name} ({artifact.path})")
+
+    @staticmethod
+    def _api_headers(token: str) -> dict[str, str]:
+        return {
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/vnd.github+json",
+            "User-Agent": "OmniShip-v0.1",
+        }
 
     @staticmethod
     def _upload_artifacts(

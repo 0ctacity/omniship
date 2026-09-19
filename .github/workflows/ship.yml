@@ -27,6 +27,7 @@ jobs:
     - name: Run GitHub Release
       run: uv run omniship run-node --stage ship --node github-release --config omniship.yaml --import-artifacts-root .omniship/imports
       env:
+        OMNISHIP_REVISION: ${{ github.sha }}
         GITHUB_TOKEN: ${{ github.token }}
   ship-complete:
     name: Ship complete

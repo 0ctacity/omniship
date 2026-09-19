@@ -188,7 +188,28 @@ def export_artifacts(artifacts: ArtifactSet, destination: str | Path) -> Path:
     return manifest_path
 
 
-def import_artifacts(source: str | Path) -> ArtifactSet:
+def _validate_revisions(
+    artifacts: ArtifactSet,
+    *,
+    expected_revision: str | None,
+) -> None:
+    revisions = {
+        artifact.provenance.revision if artifact.provenance is not None else None
+        for artifact in artifacts
+    }
+    if len(revisions) > 1:
+        raise ValueError("Artifact bundles have mixed producing revisions")
+    if revisions and expected_revision is not None and revisions != {expected_revision}:
+        raise ValueError(
+            f"Artifacts were not produced by expected revision '{expected_revision}'"
+        )
+
+
+def import_artifacts(
+    source: str | Path,
+    *,
+    expected_revision: str | None = None,
+) -> ArtifactSet:
     """Load one artifact bundle, validating its version and stored paths."""
 
     bundle = Path(source).resolve()
@@ -235,10 +256,15 @@ def import_artifacts(source: str | Path) -> ArtifactSet:
                 provenance=_load_provenance(entry.get("provenance")),
             )
         )
+    _validate_revisions(artifacts, expected_revision=expected_revision)
     return artifacts
 
 
-def import_artifact_bundles(source: str | Path) -> ArtifactSet:
+def import_artifact_bundles(
+    source: str | Path,
+    *,
+    expected_revision: str | None = None,
+) -> ArtifactSet:
     """Merge every artifact bundle found recursively below ``source``."""
 
     root = Path(source).resolve()
@@ -248,6 +274,10 @@ def import_artifact_bundles(source: str | Path) -> ArtifactSet:
 
     artifacts = ArtifactSet()
     for manifest in manifests:
-        for artifact in import_artifacts(manifest.parent):
+        for artifact in import_artifacts(
+            manifest.parent,
+            expected_revision=expected_revision,
+        ):
             artifacts.add(artifact)
+    _validate_revisions(artifacts, expected_revision=expected_revision)
     return artifacts

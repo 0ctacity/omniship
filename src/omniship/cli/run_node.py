@@ -15,6 +15,10 @@ from omniship.core.stage import Stage
 @click.option("--node", "node_id", required=True)
 @click.option("-c", "--config", "config_path", help="Path to configuration file")
 @click.option(
+    "--working-directory",
+    help="Workspace subdirectory used by the selected task",
+)
+@click.option(
     "--import-artifacts-root",
     help="Import every artifact bundle found below this directory",
 )
@@ -27,6 +31,7 @@ def run_node_cmd(
     stage: str,
     node_id: str,
     config_path: str | None,
+    working_directory: str | None,
     import_artifacts_root: str | None,
     artifact_export_path: str | None,
 ) -> None:
@@ -35,6 +40,7 @@ def run_node_cmd(
         Stage(stage),
         node_id,
         config_path=config_path,
+        working_directory=working_directory,
         artifact_import_root=import_artifacts_root,
         artifact_export_path=artifact_export_path,
     )

@@ -178,6 +178,9 @@ runs, and provides the workspace, inputs, artifacts, Git helpers, logging, and
 Provider blocks use the same imperative capabilities underneath. For example,
 `GitHubRelease(...)` delegates publishing to `GitHub(ctx).release(...)`, and
 `GitHubPages(...)` delegates site preparation to `GitHub(ctx).pages(...)`.
+The same pattern applies to `GitHubTag(...)`, `TarGz(...)`, `Zip(...)`, and
+`Sha256Manifest(...)`: their imperative capabilities are available as
+`GitHub(ctx).tag(...)`, `Archive(ctx)`, and `Checksums(ctx)`.
 
 ### Dependencies and parallel tasks
 
@@ -233,6 +236,27 @@ def ship(stage):
 The generated Pages job prepares the site, uploads the Pages artifact, and
 deploys it with the required environment, concurrency control, and job-level
 permissions.
+
+The packaging plugin can turn build outputs into reproducible archives and a
+checksum manifest without dropping down to shell commands:
+
+```python
+from omniship.plugins.packaging import Sha256Manifest, TarGz
+
+
+@pipeline.build
+def build(stage):
+    archive = stage.task(
+        TarGz(
+            output="dist/project.tar.gz",
+            files={"build/project": "project"},
+        )
+    )
+    stage.task(
+        Sha256Manifest(artifacts=["project.tar.gz"]),
+        after=[archive],
+    )
+```
 
 ## GitHub Actions
 
@@ -335,6 +359,53 @@ Use `GitHubPermissions` on `github.job(...)` when an imperative task needs
 additional permissions. Generation rejects an explicit permission set that is
 weaker than a typed block requires.
 
+### Requirements and cross-workflow artifacts
+
+Tasks can declare provider-neutral requirements separately from their
+execution placement. The GitHub target currently resolves dependency caches,
+additional repository checkouts, and OS-specific system packages. It can also
+review and import OmniShip artifact bundles from a prior workflow run:
+
+```python
+from omniship.plugins.system import SystemPackages
+
+
+@pipeline.build
+def build(stage):
+    @stage.task(
+        requires=[
+            SystemPackages(ubuntu=["libssl-dev"], macos=["openssl"]),
+            github.checkout(
+                repository="owner/source",
+                ref="main",
+                path=".deps/source",
+            ),
+            github.workflow_artifacts(
+                repository="owner/source",
+                run_id=42,
+                pattern="omniship-build-*",
+                token=github.secret("SOURCE_REPOSITORY_TOKEN"),
+            ),
+        ],
+        execution=github.job(
+            timeout_minutes=30,
+            working_directory="packages/cli",
+            caches=[
+                github.cache(
+                    paths=[".cache"],
+                    key=["build", github.runner_os, github.hash_files("uv.lock")],
+                )
+            ],
+        ),
+    )
+    def package(ctx):
+        pass
+```
+
+Before imported artifacts reach the task, the generated job verifies the
+source workflow conclusion and revision. Cross-repository private artifacts
+need a secret whose token can read Actions in the source repository.
+
 ## Dependency locking
 
 OmniShip never resolves “latest” while generating workflows. Exact GitHub
@@ -410,7 +481,8 @@ Current operations:
 | --- | --- |
 | Core | `core/command`, `core/noop`, `core/python` |
 | Python | `python/ruff`, `python/pytest`, `python/wheel` |
-| GitHub | `github/release`, `github/pages` |
+| Packaging | `packaging/tar-gz`, `packaging/zip`, `packaging/sha256-manifest` |
+| GitHub | `github/release`, `github/pages`, `github/tag` |
 
 Inspect the installed registry with:
 
@@ -459,9 +531,9 @@ support separated local Build and Ship runs.
   designed for additional provider plugins.
 - Generated GitHub workflows currently assume a uv-managed Python project and
   install dependencies with `uv sync --all-groups --locked`.
-- The bundled typed providers cover Python checks/builds, GitHub Releases, and
-  GitHub Pages. Project-specific behavior belongs in imperative tasks or an
-  external plugin.
+- The bundled typed providers cover Python checks/builds, portable packaging,
+  GitHub Releases, tags, and Pages. Language-specific toolchains and registry
+  publishers remain external or future plugins.
 - `workflow.py` is trusted Python code. Generation imports it, and imperative
   nodes import it again when they execute.
 - `omniship.yaml` is executable directly, but Python workflow definitions are

@@ -13,6 +13,7 @@ from omniship.core.artifact_bundle import (
     import_artifacts,
 )
 from omniship.core.context import ExecutionContext
+from omniship.core.execution import load_execution_revision
 from omniship.core.executor import StageExecutor
 from omniship.core.graph import StageGraph
 from omniship.core.input import RuntimeInputError, load_runtime_inputs
@@ -61,13 +62,17 @@ def run_pipeline(
         stage=stages_to_run[0],
         inputs=runtime_inputs,
         log_sink=ui.emit,
+        revision=load_execution_revision(os.environ),
     )
     if artifact_import_path:
         try:
             source = Path(artifact_import_path)
             if not source.is_absolute():
                 source = workspace_root / source
-            context.artifacts = import_artifacts(source)
+            context.artifacts = import_artifacts(
+                source,
+                expected_revision=context.revision,
+            )
         except Exception as exc:
             console.print(f"[bold red]Artifact Import Error:[/bold red] {exc}")
             return 1
@@ -115,6 +120,7 @@ def run_node(
     console: Console | None = None,
     artifact_import_root: str | None = None,
     artifact_export_path: str | None = None,
+    working_directory: str | None = None,
 ) -> int:
     console = console or Console()
     registry = load_plugins()
@@ -138,7 +144,19 @@ def run_node(
         )
         return 1
 
-    workspace_root = path.parent.resolve()
+    repository_root = path.parent.resolve()
+    workspace_root = repository_root
+    if working_directory is not None:
+        workspace_root = (repository_root / working_directory).resolve()
+        if (
+            not workspace_root.is_relative_to(repository_root)
+            or not workspace_root.is_dir()
+        ):
+            console.print(
+                "[bold red]Error:[/bold red] Working directory must be an "
+                "existing directory inside the workspace."
+            )
+            return 1
     try:
         runtime_inputs = load_runtime_inputs(os.environ)
     except RuntimeInputError as exc:
@@ -148,15 +166,23 @@ def run_node(
     context = ExecutionContext(
         workspace_root=workspace_root,
         stage=stage,
+        pipeline_root=repository_root,
         inputs=runtime_inputs,
         log_sink=ui.emit,
+        revision=load_execution_revision(os.environ),
     )
     if artifact_import_root:
         try:
             source = Path(artifact_import_root)
             if not source.is_absolute():
-                source = workspace_root / source
-            context.artifacts = import_artifact_bundles(source)
+                source = repository_root / source
+            context.artifacts = import_artifact_bundles(
+                source,
+                expected_revision=(
+                    os.environ.get("OMNISHIP_EXPECTED_ARTIFACT_REVISION")
+                    or context.revision
+                ),
+            )
         except Exception as exc:
             console.print(f"[bold red]Artifact Import Error:[/bold red] {exc}")
             return 1
@@ -173,7 +199,7 @@ def run_node(
         try:
             destination = Path(artifact_export_path)
             if not destination.is_absolute():
-                destination = workspace_root / destination
+                destination = repository_root / destination
             export_artifacts(context.artifacts, destination)
         except Exception as exc:
             console.print(f"[bold red]Artifact Export Error:[/bold red] {exc}")

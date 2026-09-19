@@ -36,7 +36,10 @@ class PythonTaskOperation:
         started = time.monotonic()
         try:
             config = PythonTaskConfig.model_validate(inputs.params)
-            function = self._load_callable(context.workspace_root, config.callable)
+            function = self._load_callable(
+                context.pipeline_root or context.workspace_root,
+                config.callable,
+            )
             task_context = TaskContext(
                 context.workspace_root,
                 {**os.environ, **context.env},

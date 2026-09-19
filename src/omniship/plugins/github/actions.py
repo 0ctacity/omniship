@@ -1,7 +1,7 @@
 import re
 import shlex
-from collections.abc import Iterable
-from dataclasses import dataclass, fields, replace
+from collections.abc import Iterable, Mapping
+from dataclasses import dataclass, field, fields, replace
 from enum import StrEnum
 from pathlib import Path
 from typing import ClassVar
@@ -9,8 +9,10 @@ from typing import ClassVar
 import yaml
 
 from omniship.config.models import NodeConfig, OmniShipConfig
+from omniship.core.execution import CacheSpec, SecretRef
 from omniship.core.stage import Stage
 from omniship.plugins.api import GeneratedFile
+from omniship.plugins.registry import PluginRegistry
 from omniship.workflow.model import Pipeline
 
 from .dependencies import LOCK_FILENAME, GitHubActionLock
@@ -49,6 +51,15 @@ class GitHubRunner(StrEnum):
     MACOS_15_INTEL = "macos-15-intel"
     MACOS_26_INTEL = "macos-26-intel"
     XCODE_27 = "xcode-27"
+
+
+class GitHubShell(StrEnum):
+    BASH = "bash"
+    CMD = "cmd"
+    POWERSHELL = "powershell"
+    PWSH = "pwsh"
+    PYTHON = "python"
+    SH = "sh"
 
 
 class GitHubPermission(StrEnum):
@@ -146,6 +157,12 @@ class GitHubJob:
     runners: tuple[GitHubRunner, ...]
     fail_fast: bool = False
     permissions: GitHubPermissions | None = None
+    timeout_minutes: int | None = None
+    environment: str | None = None
+    working_directory: str | None = None
+    shell: GitHubShell | None = None
+    env: Mapping[str, str | SecretRef] = field(default_factory=dict)
+    caches: tuple[CacheSpec, ...] = ()
 
     def __post_init__(self) -> None:
         if not self.runners:
@@ -156,6 +173,36 @@ class GitHubJob:
             self.permissions, GitHubPermissions
         ):
             raise TypeError("permissions must be a GitHubPermissions value")
+        if self.timeout_minutes is not None and not 1 <= self.timeout_minutes <= 360:
+            raise ValueError("GitHub job timeout must be between 1 and 360 minutes")
+        for field_name in ("environment", "working_directory"):
+            value = getattr(self, field_name)
+            if value is not None and (not isinstance(value, str) or not value):
+                raise TypeError(f"{field_name} must be a non-empty string")
+        if self.working_directory is not None:
+            normalized_directory = self.working_directory.replace("\\", "/")
+            directory = Path(normalized_directory)
+            if (
+                directory.is_absolute()
+                or ".." in directory.parts
+                or re.match(r"^[A-Za-z]:/", normalized_directory)
+            ):
+                raise ValueError("working_directory must stay inside the workspace")
+        if self.shell is not None and not isinstance(self.shell, GitHubShell):
+            raise TypeError("shell must be a GitHubShell value")
+        normalized_env = dict(self.env)
+        if any(
+            not isinstance(name, str)
+            or not name
+            or not isinstance(value, (str, SecretRef))
+            for name, value in normalized_env.items()
+        ):
+            raise TypeError("env must map non-empty names to strings or SecretRef values")
+        normalized_caches = tuple(self.caches)
+        if any(not isinstance(cache, CacheSpec) for cache in normalized_caches):
+            raise TypeError("caches must contain CacheSpec values")
+        object.__setattr__(self, "env", normalized_env)
+        object.__setattr__(self, "caches", normalized_caches)
 
 
 def _normalize_trigger_values(
@@ -343,6 +390,103 @@ class GitHubWorkflowDispatch:
 GitHubTrigger = GitHubPush | GitHubPullRequest | GitHubWorkflowDispatch
 
 
+@dataclass(frozen=True, slots=True)
+class _GitHubExpression:
+    value: str
+
+    def render(self) -> str:
+        return f"${{{{ {self.value} }}}}"
+
+
+@dataclass(frozen=True, slots=True)
+class GitHubCheckout:
+    """An additional repository checkout required by a task."""
+
+    repository: str
+    ref: str
+    path: str
+    persist_credentials: bool = False
+    fetch_depth: int = 1
+    submodules: bool = False
+    token: SecretRef | None = None
+
+    @property
+    def name(self) -> str:
+        return f"github/checkout:{self.path}"
+
+    def __post_init__(self) -> None:
+        if re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", self.repository) is None:
+            raise ValueError("repository must use the 'owner/name' form")
+        if not self.ref:
+            raise ValueError("checkout ref cannot be empty")
+        normalized_path = self.path.replace("\\", "/")
+        path = Path(normalized_path)
+        if (
+            not normalized_path
+            or path.is_absolute()
+            or ".." in path.parts
+            or re.match(r"^[A-Za-z]:/", normalized_path)
+        ):
+            raise ValueError("checkout path must stay inside the workspace")
+        if not isinstance(self.fetch_depth, int) or self.fetch_depth < 0:
+            raise ValueError("fetch_depth must be a non-negative integer")
+        if not isinstance(self.persist_credentials, bool) or not isinstance(
+            self.submodules, bool
+        ):
+            raise TypeError("checkout boolean options must be bool values")
+        if self.token is not None and not isinstance(self.token, SecretRef):
+            raise TypeError("checkout token must be a SecretRef")
+
+
+@dataclass(frozen=True, slots=True)
+class GitHubWorkflowArtifacts:
+    """Artifacts imported from a completed GitHub Actions workflow run."""
+
+    repository: str
+    run_id: int | GitHubStringInput
+    pattern: str
+    revision: str | GitHubStringInput | None = None
+    require_success: bool = True
+    token: SecretRef | None = None
+
+    @property
+    def name(self) -> str:
+        run = (
+            self.run_id.name
+            if isinstance(self.run_id, GitHubStringInput)
+            else self.run_id
+        )
+        return f"github/workflow-artifacts:{self.repository}:{run}:{self.pattern}"
+
+    def __post_init__(self) -> None:
+        if re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", self.repository) is None:
+            raise ValueError("repository must use the 'owner/name' form")
+        if not isinstance(self.run_id, GitHubStringInput) and (
+            not isinstance(self.run_id, int)
+            or isinstance(self.run_id, bool)
+            or self.run_id < 1
+        ):
+            raise ValueError("workflow artifact run_id must be a positive integer or input")
+        if not isinstance(self.pattern, str) or not self.pattern or "\n" in self.pattern:
+            raise ValueError("workflow artifact pattern must be a non-empty single line")
+        if self.revision is not None and not isinstance(
+            self.revision, (str, GitHubStringInput)
+        ):
+            raise TypeError("workflow artifact revision must be a string or input")
+        if isinstance(self.revision, str) and not self.revision:
+            raise ValueError("workflow artifact revision cannot be empty")
+        if not isinstance(self.require_success, bool):
+            raise TypeError("require_success must be a boolean")
+        if self.token is not None and not isinstance(self.token, SecretRef):
+            raise TypeError("workflow artifact token must be a SecretRef")
+
+
+def _render_requirement_value(value: int | str | GitHubStringInput) -> str:
+    if isinstance(value, GitHubStringInput):
+        return f"${{{{ inputs.{value.name} }}}}"
+    return str(value)
+
+
 def _trigger_filters_document(trigger: object) -> dict[str, object]:
     document: dict[str, object] = {}
     for field_info in fields(trigger):
@@ -413,23 +557,138 @@ class GitHubActions:
     def default_job(self) -> GitHubJob:
         return GitHubJob((self.default_runner,))
 
+    @property
+    def runner_os(self) -> _GitHubExpression:
+        """Reference the operating system of the current GitHub runner."""
+
+        return _GitHubExpression("runner.os")
+
+    @property
+    def runner_arch(self) -> _GitHubExpression:
+        """Reference the architecture of the current GitHub runner."""
+
+        return _GitHubExpression("runner.arch")
+
+    @staticmethod
+    def hash_files(*patterns: str) -> _GitHubExpression:
+        """Create a GitHub ``hashFiles`` expression for cache invalidation."""
+
+        if not patterns or any(not isinstance(pattern, str) or not pattern for pattern in patterns):
+            raise ValueError("hash_files requires at least one non-empty pattern")
+        arguments = ", ".join(
+            f"'{pattern.replace("'", "''")}'" for pattern in patterns
+        )
+        return _GitHubExpression(f"hashFiles({arguments})")
+
+    @staticmethod
+    def secret(name: str) -> SecretRef:
+        """Reference a GitHub repository or environment secret by name."""
+
+        return SecretRef(name)
+
+    @staticmethod
+    def checkout(
+        *,
+        repository: str,
+        ref: str,
+        path: str,
+        persist_credentials: bool = False,
+        fetch_depth: int = 1,
+        submodules: bool = False,
+        token: SecretRef | None = None,
+    ) -> GitHubCheckout:
+        """Declare an additional source checkout required by a task."""
+
+        return GitHubCheckout(
+            repository=repository,
+            ref=ref,
+            path=path,
+            persist_credentials=persist_credentials,
+            fetch_depth=fetch_depth,
+            submodules=submodules,
+            token=token,
+        )
+
+    @staticmethod
+    def workflow_artifacts(
+        *,
+        repository: str,
+        run_id: int | GitHubStringInput,
+        pattern: str,
+        revision: str | GitHubStringInput | None = None,
+        require_success: bool = True,
+        token: SecretRef | None = None,
+    ) -> GitHubWorkflowArtifacts:
+        """Import validated OmniShip bundles from an earlier workflow run."""
+
+        return GitHubWorkflowArtifacts(
+            repository=repository,
+            run_id=run_id,
+            pattern=pattern,
+            revision=revision,
+            require_success=require_success,
+            token=token,
+        )
+
+    @staticmethod
+    def cache(
+        *,
+        paths: Iterable[str],
+        key: str | Iterable[str | _GitHubExpression],
+        restore_prefixes: Iterable[str] = (),
+    ) -> CacheSpec:
+        """Build an Actions cache declaration from typed key parts."""
+
+        if isinstance(key, str):
+            rendered_key = key
+        else:
+            parts = tuple(key)
+            if not parts or any(
+                not isinstance(part, (str, _GitHubExpression)) for part in parts
+            ):
+                raise TypeError("cache key parts must be strings or GitHub expressions")
+            rendered_key = "-".join(
+                part.render() if isinstance(part, _GitHubExpression) else part
+                for part in parts
+            )
+        return CacheSpec(
+            paths=paths,
+            key=rendered_key,
+            restore_keys=restore_prefixes,
+        )
+
     def job(
         self,
         *,
         runners: Iterable[GitHubRunner] | None = None,
         fail_fast: bool = False,
         permissions: GitHubPermissions | None = None,
+        timeout_minutes: int | None = None,
+        environment: str | None = None,
+        working_directory: str | None = None,
+        shell: GitHubShell | None = None,
+        env: Mapping[str, str | SecretRef] | None = None,
+        caches: Iterable[CacheSpec] = (),
     ) -> GitHubJob:
         selected_runners = (self.default_runner,) if runners is None else tuple(runners)
         return GitHubJob(
             selected_runners,
             fail_fast=fail_fast,
             permissions=permissions,
+            timeout_minutes=timeout_minutes,
+            environment=environment,
+            working_directory=working_directory,
+            shell=shell,
+            env={} if env is None else env,
+            caches=tuple(caches),
         )
 
 
 class GitHubActionsGenerator:
     name = "github/actions"
+
+    def __init__(self, registry: PluginRegistry) -> None:
+        self.registry = registry
 
     def generate(
         self,
@@ -446,7 +705,7 @@ class GitHubActionsGenerator:
         github_nodes = tuple(
             node
             for node in config.ship.values()
-            if node.uses in {"github/pages", "github/release"}
+            if node.uses in {"github/pages", "github/release", "github/tag"}
         )
         if not targets and not github_nodes:
             return ()
@@ -526,19 +785,36 @@ class GitHubActionsGenerator:
                         "GitHub Pages deployment requires exactly one runner"
                     )
 
+                workflow_artifacts = tuple(
+                    requirement
+                    for requirement in node.requirements
+                    if isinstance(requirement, GitHubWorkflowArtifacts)
+                )
                 required_permissions = GitHubPermissions()
-                if node.uses == "github/release" and not node.with_.get(
+                if workflow_artifacts:
+                    required_permissions = required_permissions.with_minimum(
+                        GitHubPermissions(
+                            actions=GitHubPermission.READ,
+                            contents=GitHubPermission.READ,
+                        ),
+                        node_name=node_name,
+                    )
+                if node.uses in {"github/release", "github/tag"} and not node.with_.get(
                     "dry_run", False
                 ):
-                    required_permissions = GitHubPermissions(
-                        contents=GitHubPermission.WRITE
+                    required_permissions = required_permissions.with_minimum(
+                        GitHubPermissions(contents=GitHubPermission.WRITE),
+                        node_name=node_name,
                     )
                 elif node.uses == "github/pages":
-                    required_permissions = GitHubPermissions(
-                        actions=GitHubPermission.READ,
-                        contents=GitHubPermission.READ,
-                        id_token=GitHubPermission.WRITE,
-                        pages=GitHubPermission.WRITE,
+                    required_permissions = required_permissions.with_minimum(
+                        GitHubPermissions(
+                            actions=GitHubPermission.READ,
+                            contents=GitHubPermission.READ,
+                            id_token=GitHubPermission.WRITE,
+                            pages=GitHubPermission.WRITE,
+                        ),
+                        node_name=node_name,
                     )
                 job_permissions = placement.permissions
                 if job_permissions is None:
@@ -558,6 +834,131 @@ class GitHubActionsGenerator:
                     dependency_jobs = [root_dependency]
 
                 steps = setup_steps()
+                imports_artifacts = False
+                for requirement_index, resolved in enumerate(
+                    self.registry.resolve_requirements(
+                        self.name, node.requirements
+                    ),
+                    start=1,
+                ):
+                    if isinstance(resolved, GitHubWorkflowArtifacts):
+                        run_id = _render_requirement_value(resolved.run_id)
+                        revision = (
+                            _render_requirement_value(resolved.revision)
+                            if resolved.revision is not None
+                            else ""
+                        )
+                        token = (
+                            f"${{{{ secrets.{resolved.token.name} }}}}"
+                            if resolved.token is not None
+                            else "${{ github.token }}"
+                        )
+                        success_check = (
+                            'if [ "$conclusion" != "success" ]; then\n'
+                            '  echo "Source workflow did not succeed: '
+                            '$conclusion" >&2\n'
+                            "  exit 1\n"
+                            "fi\n"
+                            if resolved.require_success
+                            else ""
+                        )
+                        steps.append(
+                            {
+                                "name": f"Review artifacts from run {run_id}",
+                                "shell": "bash",
+                                "env": {
+                                    "GH_TOKEN": token,
+                                    "OMNISHIP_REPOSITORY": resolved.repository,
+                                    "OMNISHIP_RUN_ID": run_id,
+                                    "OMNISHIP_EXPECTED_REVISION": revision,
+                                },
+                                "run": (
+                                    "set -euo pipefail\n"
+                                    'endpoint="repos/$OMNISHIP_REPOSITORY/'
+                                    'actions/runs/$OMNISHIP_RUN_ID"\n'
+                                    'conclusion="$(gh api "$endpoint" '
+                                    '--jq .conclusion)"\n'
+                                    'head_sha="$(gh api "$endpoint" '
+                                    '--jq .head_sha)"\n'
+                                    f"{success_check}"
+                                    'if [ -n "$OMNISHIP_EXPECTED_REVISION" ] && '
+                                    '[ "$head_sha" != '
+                                    '"$OMNISHIP_EXPECTED_REVISION" ]; then\n'
+                                    '  echo "Source workflow revision mismatch" >&2\n'
+                                    "  exit 1\n"
+                                    "fi\n"
+                                    'echo "OMNISHIP_EXPECTED_ARTIFACT_REVISION='
+                                    '$head_sha" >> "$GITHUB_ENV"\n'
+                                ),
+                            }
+                        )
+                        steps.append(
+                            {
+                                "name": f"Download artifacts from run {run_id}",
+                                "uses": action_lock.reference("download-artifact"),
+                                "with": {
+                                    "pattern": resolved.pattern,
+                                    "path": (
+                                        f"{ARTIFACT_IMPORT_PATH}/external-"
+                                        f"{requirement_index}"
+                                    ),
+                                    "github-token": token,
+                                    "repository": resolved.repository,
+                                    "run-id": run_id,
+                                },
+                            }
+                        )
+                        imports_artifacts = True
+                        continue
+                    if isinstance(resolved, GitHubCheckout):
+                        checkout_inputs: dict[str, object] = {
+                            "repository": resolved.repository,
+                            "ref": resolved.ref,
+                            "path": resolved.path,
+                            "persist-credentials": resolved.persist_credentials,
+                            "fetch-depth": resolved.fetch_depth,
+                            "submodules": resolved.submodules,
+                        }
+                        if resolved.token is not None:
+                            checkout_inputs["token"] = (
+                                f"${{{{ secrets.{resolved.token.name} }}}}"
+                            )
+                        steps.append(
+                            {
+                                "name": f"Check out {resolved.repository}",
+                                "uses": action_lock.reference("checkout"),
+                                "with": checkout_inputs,
+                            }
+                        )
+                        continue
+                    if isinstance(resolved, (tuple, list)):
+                        if any(not isinstance(step, Mapping) for step in resolved):
+                            raise TypeError(
+                                f"Requirement resolver for node '{node_name}' must "
+                                "return GitHub Actions step mappings"
+                            )
+                        steps.extend(dict(step) for step in resolved)
+                        continue
+                    if not isinstance(resolved, Mapping):
+                        raise TypeError(
+                            f"Requirement resolver for node '{node_name}' must return "
+                            "a GitHub Actions step mapping"
+                        )
+                    steps.append(dict(resolved))
+                for cache_index, cache in enumerate(placement.caches, start=1):
+                    cache_inputs = {
+                        "path": "\n".join(cache.paths),
+                        "key": cache.key,
+                    }
+                    if cache.restore_keys:
+                        cache_inputs["restore-keys"] = "\n".join(cache.restore_keys)
+                    steps.append(
+                        {
+                            "name": f"Restore cache {cache_index}",
+                            "uses": action_lock.reference("cache"),
+                            "with": cache_inputs,
+                        }
+                    )
                 command = [
                     "uv",
                     "run",
@@ -583,11 +984,7 @@ class GitHubActionsGenerator:
                                 },
                             }
                         )
-                    command.extend(["--import-artifacts-root", ARTIFACT_IMPORT_PATH])
-
-                if stage == Stage.BUILD:
-                    export_path = f"{ARTIFACT_PATH}/{job_id}"
-                    command.extend(["--export-artifacts", export_path])
+                    imports_artifacts = True
 
                 if stage == Stage.SHIP and config.build:
                     steps.append(
@@ -599,16 +996,39 @@ class GitHubActionsGenerator:
                             },
                         }
                     )
+                    imports_artifacts = True
+
+                if imports_artifacts:
                     command.extend(["--import-artifacts-root", ARTIFACT_IMPORT_PATH])
+
+                if stage == Stage.BUILD:
+                    export_path = f"{ARTIFACT_PATH}/{job_id}"
+                    command.extend(["--export-artifacts", export_path])
+
+                if placement.working_directory is not None:
+                    command.extend(
+                        ["--working-directory", placement.working_directory]
+                    )
 
                 run_step: dict[str, object] = {
                     "name": f"Run {_display_name(node_name)}",
                     "run": shlex.join(command),
                 }
-                step_env: dict[str, str] = {}
+                if placement.shell is not None:
+                    run_step["shell"] = placement.shell.value
+                step_env = {
+                    name: (
+                        f"${{{{ secrets.{value.name} }}}}"
+                        if isinstance(value, SecretRef)
+                        else value
+                    )
+                    for name, value in placement.env.items()
+                }
+                if stage in {Stage.BUILD, Stage.SHIP}:
+                    step_env["OMNISHIP_REVISION"] = "${{ github.sha }}"
                 if has_runtime_inputs:
                     step_env["OMNISHIP_INPUTS"] = "${{ toJSON(inputs) }}"
-                if node.uses == "github/release" or placement.permissions is not None:
+                if node.uses in {"github/release", "github/tag"} or placement.permissions is not None:
                     step_env["GITHUB_TOKEN"] = "${{ github.token }}"
                 if step_env:
                     run_step["env"] = step_env
@@ -652,6 +1072,8 @@ class GitHubActionsGenerator:
                     if len(dependency_jobs) == 1
                     else dependency_jobs,
                 }
+                if placement.timeout_minutes is not None:
+                    job["timeout-minutes"] = placement.timeout_minutes
                 if job_permissions is not None:
                     job["permissions"] = job_permissions.to_document()
                 if node.uses == "github/pages":
@@ -659,6 +1081,8 @@ class GitHubActionsGenerator:
                         "name": "github-pages",
                         "url": "${{ steps.deployment.outputs.page_url }}",
                     }
+                elif placement.environment is not None:
+                    job["environment"] = placement.environment
                 job["runs-on"] = placement.runners[0].value
                 job["steps"] = steps
                 if len(placement.runners) > 1:

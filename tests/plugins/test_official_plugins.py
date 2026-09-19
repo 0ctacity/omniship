@@ -1,15 +1,23 @@
 import tomllib
 from pathlib import Path
 
+import pytest
+
 from omniship.operations import register_core_plugin
 from omniship.plugins.github import (
     GitHub,
     GitHubPages,
     GitHubRelease,
+    GitHubTag,
     register_github_plugin,
+)
+from omniship.plugins.packaging import (
+    Archive,
+    register_packaging_plugin,
 )
 from omniship.plugins.python import Python, Ruff, register_python_plugin
 from omniship.plugins.registry import PluginRegistry
+from omniship.plugins.system import SystemPackages
 from omniship.runtime import TaskContext
 
 
@@ -36,7 +44,19 @@ def test_official_plugins_have_independent_registration_boundaries() -> None:
 
     github = PluginRegistry()
     register_github_plugin(github)
-    assert _operation_names(github) == {"github/pages", "github/release"}
+    assert _operation_names(github) == {
+        "github/pages",
+        "github/release",
+        "github/tag",
+    }
+
+    packaging = PluginRegistry()
+    register_packaging_plugin(packaging)
+    assert _operation_names(packaging) == {
+        "packaging/sha256-manifest",
+        "packaging/tar-gz",
+        "packaging/zip",
+    }
 
 
 def test_public_types_are_owned_by_their_provider_packages() -> None:
@@ -45,6 +65,8 @@ def test_public_types_are_owned_by_their_provider_packages() -> None:
     assert GitHub.__module__.startswith("omniship.plugins.github")
     assert GitHubPages.__module__.startswith("omniship.plugins.github")
     assert GitHubRelease.__module__.startswith("omniship.plugins.github")
+    assert GitHubTag.__module__.startswith("omniship.plugins.github")
+    assert Archive.__module__.startswith("omniship.plugins.packaging")
 
 
 def test_package_entry_points_discover_official_plugins_separately() -> None:
@@ -56,6 +78,8 @@ def test_package_entry_points_discover_official_plugins_separately() -> None:
         "core": "omniship.operations:register_core_plugin",
         "python": "omniship.plugins.python:register_python_plugin",
         "github": "omniship.plugins.github:register_github_plugin",
+        "system": "omniship.plugins.system:register_system_plugin",
+        "packaging": "omniship.plugins.packaging:register_packaging_plugin",
     }
 
 
@@ -69,3 +93,17 @@ def test_python_imperative_capabilities_are_provider_owned(tmp_path: Path) -> No
     assert not hasattr(context, "python")
     assert not hasattr(context, "project")
     assert Python(context).project.version() == "1.2.3"
+
+
+def test_system_packages_are_typed_and_os_specific() -> None:
+    packages = SystemPackages(
+        ubuntu=["zlib1g-dev"],
+        macos=["zlib"],
+        windows=["zlib"],
+    )
+
+    assert packages.name == "system/packages"
+    assert packages.ubuntu == ("zlib1g-dev",)
+
+    with pytest.raises(ValueError, match="package name"):
+        SystemPackages(ubuntu=["zlib1g-dev; whoami"])

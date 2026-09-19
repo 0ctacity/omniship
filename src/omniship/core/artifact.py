@@ -1,5 +1,6 @@
 """Artifact values and the collection used to move outputs between stages."""
 
+from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
 from string import hexdigits
@@ -109,10 +110,18 @@ class ArtifactSet:
         names: Iterable[str],
         *,
         exact: bool = False,
+        revision: str | None = None,
+        consistent_revision: bool = False,
     ) -> tuple[Artifact, ...]:
-        """Return required named artifacts or reject an incomplete artifact set."""
+        """Return named artifacts after validating the requested contract."""
 
         requested = tuple(names)
+        counts = Counter(artifact.name for artifact in self._artifacts)
+        duplicates = [name for name in requested if counts[name] > 1]
+        if duplicates:
+            raise ValueError(
+                f"Duplicate artifacts: {', '.join(dict.fromkeys(duplicates))}"
+            )
         selected = tuple(
             artifact for name in requested if (artifact := self.get(name)) is not None
         )
@@ -129,4 +138,14 @@ class ArtifactSet:
             ]
             if unexpected:
                 raise ValueError(f"Unexpected artifacts: {', '.join(unexpected)}")
+        revisions = {
+            artifact.provenance.revision if artifact.provenance is not None else None
+            for artifact in selected
+        }
+        if consistent_revision and len(revisions) > 1:
+            raise ValueError("Artifacts have mixed producing revisions")
+        if revision is not None and revisions != {revision}:
+            raise ValueError(
+                f"Artifacts were not produced by expected revision '{revision}'"
+            )
         return selected

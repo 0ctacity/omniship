@@ -12,8 +12,13 @@ from omniship.plugins.github.operations import (
     GithubPagesOperation,
     GithubReleaseConfig,
     GithubReleaseOperation,
+    GithubTagOperation,
 )
-from omniship.plugins.github.runtime import GitHubPagesResult, GitHubReleaseResult
+from omniship.plugins.github.runtime import (
+    GitHubPagesResult,
+    GitHubReleaseResult,
+    GitHubTagResult,
+)
 from omniship.plugins.python import operations as python_operations
 from omniship.plugins.python.operations import WheelOperation
 from omniship.plugins.python.runtime import PythonTools
@@ -106,6 +111,64 @@ def test_imperative_github_release_uses_context_artifacts(tmp_path: Path) -> Non
     )
     assert "Simulated release" in "\n".join(context.log.lines)
     assert "python-wheel" in "\n".join(context.log.lines)
+
+
+def test_imperative_github_tag_supports_dry_run(tmp_path: Path) -> None:
+    context = TaskContext(tmp_path, {"GITHUB_SHA": "abc123"})
+
+    result = GitHub(context).tag(
+        repository="0ctacity/omniship",
+        tag="v1.0.0",
+        dry_run=True,
+    )
+
+    assert result == GitHubTagResult(
+        repository="0ctacity/omniship",
+        tag="v1.0.0",
+        target="abc123",
+    )
+    assert "Simulated tag" in "\n".join(context.log.lines)
+
+
+@pytest.mark.asyncio
+async def test_github_tag_operation_delegates_to_imperative_facade(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[dict[str, object]] = []
+
+    def tag(self: GitHub, **kwargs: object) -> GitHubTagResult:
+        calls.append(kwargs)
+        return GitHubTagResult(
+            repository=str(kwargs["repository"]),
+            tag=str(kwargs["tag"]),
+            target="abc123",
+        )
+
+    monkeypatch.setattr(GitHub, "tag", tag)
+    result = await GithubTagOperation().execute(
+        ExecutionContext(workspace_root=tmp_path, stage=Stage.SHIP),
+        NodeInputs(
+            params={
+                "repository": "0ctacity/omniship",
+                "tag": "v1.0.0",
+                "target": "abc123",
+                "force": True,
+                "dry_run": True,
+            }
+        ),
+    )
+
+    assert result.is_success
+    assert calls == [
+        {
+            "repository": "0ctacity/omniship",
+            "tag": "v1.0.0",
+            "target": "abc123",
+            "force": True,
+            "dry_run": True,
+        }
+    ]
 
 
 @pytest.mark.asyncio

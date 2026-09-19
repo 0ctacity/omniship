@@ -25,6 +25,8 @@ omniship = "omniship.cli.app:cli"
 core = "omniship.operations:register_core_plugin"
 python = "omniship.plugins.python:register_python_plugin"
 github = "omniship.plugins.github:register_github_plugin"
+system = "omniship.plugins.system:register_system_plugin"
+packaging = "omniship.plugins.packaging:register_packaging_plugin"
 
 [build-system]
 requires = ["uv_build>=0.12.9,<0.13.0"]

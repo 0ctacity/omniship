@@ -1,23 +1,27 @@
 from .actions import (
     GitHubActions,
     GitHubBooleanInput,
+    GitHubCheckout,
     GitHubJob,
     GitHubPermission,
     GitHubPermissions,
     GitHubPullRequest,
     GitHubPush,
     GitHubRunner,
+    GitHubShell,
     GitHubStringInput,
     GitHubWorkflow,
+    GitHubWorkflowArtifacts,
     GitHubWorkflowDispatch,
 )
-from .blocks import GitHubPages, GitHubRelease
+from .blocks import GitHubPages, GitHubRelease, GitHubTag
 from .operations import register_github_plugin
-from .runtime import GitHub, GitHubPagesResult
+from .runtime import GitHub, GitHubPagesResult, GitHubTagResult
 
 __all__ = [
     "GitHubActions",
     "GitHubBooleanInput",
+    "GitHubCheckout",
     "GitHubJob",
     "GitHubPermission",
     "GitHubPermissions",
@@ -27,9 +31,13 @@ __all__ = [
     "GitHubPages",
     "GitHubPagesResult",
     "GitHubRelease",
+    "GitHubTag",
+    "GitHubTagResult",
     "GitHubRunner",
+    "GitHubShell",
     "GitHubStringInput",
     "GitHubWorkflow",
+    "GitHubWorkflowArtifacts",
     "GitHubWorkflowDispatch",
     "register_github_plugin",
 ]
