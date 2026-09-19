@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any, Callable, Mapping
 
 from omniship.core.artifact import Artifact
+from omniship.core.execution import ExecutionHost
 from omniship.core.logging import LogLevel, LogStream
 
 
@@ -116,6 +117,7 @@ class TaskContext:
         artifacts: Iterable[Artifact] = (),
         inputs: Mapping[str, Any] | None = None,
         log_sink: Callable[[LogLevel, str, LogStream], None] | None = None,
+        host: ExecutionHost | None = None,
     ) -> None:
         self.workspace = workspace_root.resolve()
         self.env = dict(env)
@@ -123,6 +125,7 @@ class TaskContext:
         self.artifacts = TaskArtifacts(self.workspace, tuple(artifacts))
         self.inputs = dict(inputs or {})
         self.git = GitTools(self.workspace)
+        self.host = host or ExecutionHost.detect()
 
     def fail(self, message: str) -> None:
         raise TaskFailure(message)

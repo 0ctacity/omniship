@@ -43,6 +43,7 @@ class PythonTaskOperation:
                 context.artifacts.to_list(),
                 context.inputs,
                 context.emit_log,
+                host=context.host,
             )
             if inspect.iscoroutinefunction(function):
                 await function(task_context)

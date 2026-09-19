@@ -1,3 +1,4 @@
+from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
@@ -12,6 +13,7 @@ from omniship.plugins.github import (
 from omniship.plugins.python import Pytest, Ruff, Wheel
 from omniship.workflow.compiler import compile_pipeline
 from omniship.workflow.errors import WorkflowError
+from omniship.workflow.model import NodeSpec
 from omniship.workflow.serializer import serialize_config
 
 
@@ -33,6 +35,28 @@ def build_package(ctx):
 
 def invalid_task():
     pass
+
+
+@dataclass(frozen=True)
+class ExampleRequirement:
+    name: str
+    version: str
+
+
+@dataclass(frozen=True)
+class RequirementBlock:
+    requirements: tuple[ExampleRequirement, ...]
+    name: str = "requirement-block"
+
+    def compile(self, stage, workspace_root):
+        return [
+            NodeSpec(
+                self.name,
+                stage,
+                "core/noop",
+                requirements=self.requirements,
+            )
+        ]
 
 
 def test_stage_functions_compile_typed_blocks(tmp_path: Path) -> None:
@@ -143,6 +167,56 @@ def test_execution_placement_applies_to_blocks_and_imperative_tasks(
     assert config.check["ruff"].execution is lint_job
     assert config.check["test"].execution is test_job
     assert "execution" not in serialize_config(config, source_name="workflow.py")
+
+
+def test_requirements_apply_to_blocks_and_imperative_tasks(tmp_path: Path) -> None:
+    python = ExampleRequirement("python/toolchain", "3.14")
+    uv = ExampleRequirement("python/uv", "0.8")
+    pipeline = Pipeline()
+
+    @pipeline.check
+    def check(stage):
+        stage.task(run_tests, name="test", requires=[python])
+        stage.task(RequirementBlock((python,)), requires=[python, uv])
+
+    config = compile_pipeline(pipeline, tmp_path / "workflow.py")
+
+    assert config.check["test"].requirements == (python,)
+    assert config.check["requirement-block"].requirements == (python, uv)
+    assert "requirements" not in serialize_config(config, source_name="workflow.py")
+
+
+def test_conflicting_requirements_are_rejected(tmp_path: Path) -> None:
+    pipeline = Pipeline()
+
+    @pipeline.check
+    def check(stage):
+        stage.task(
+            run_tests,
+            requires=[
+                ExampleRequirement("python/toolchain", "3.13"),
+                ExampleRequirement("python/toolchain", "3.14"),
+            ],
+        )
+
+    with pytest.raises(WorkflowError, match="Conflicting requirement"):
+        compile_pipeline(pipeline, tmp_path / "workflow.py")
+
+
+def test_conflicting_block_and_task_requirements_are_rejected(
+    tmp_path: Path,
+) -> None:
+    pipeline = Pipeline()
+
+    @pipeline.check
+    def check(stage):
+        stage.task(
+            RequirementBlock((ExampleRequirement("python/toolchain", "3.13"),)),
+            requires=[ExampleRequirement("python/toolchain", "3.14")],
+        )
+
+    with pytest.raises(WorkflowError, match="Conflicting requirement"):
+        compile_pipeline(pipeline, tmp_path / "workflow.py")
 
 
 def test_cross_stage_dependency_is_rejected(tmp_path: Path) -> None:

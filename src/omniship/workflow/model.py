@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from typing import Any, Protocol
 
 from omniship.core.logging import Logging
+from omniship.core.requirement import Requirement
 from omniship.core.stage import Stage
 
 from .errors import WorkflowError
@@ -26,6 +27,7 @@ class NodeSpec:
     needs: tuple[NodeRef, ...] = ()
     condition: dict[str, Any] | str | None = None
     execution: Any = None
+    requirements: tuple[Requirement, ...] = ()
 
 
 class Block(Protocol):
@@ -38,6 +40,7 @@ class TaskDeclaration:
     ref: NodeRef
     after: tuple[NodeRef, ...] = ()
     execution: Any = None
+    requirements: tuple[Requirement, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -45,6 +48,7 @@ class BlockDeclaration:
     block: Block
     after: tuple[NodeRef, ...] = ()
     execution: Any = None
+    requirements: tuple[Requirement, ...] = ()
 
 
 class StageBuilder:
@@ -59,6 +63,7 @@ class StageBuilder:
         after: Iterable[NodeRef | Callable[[Any], Any]] = (),
         name: str | None = None,
         execution: Any = None,
+        requires: Iterable[Requirement] = (),
     ) -> Any:
         if item is None:
 
@@ -69,6 +74,7 @@ class StageBuilder:
                     name=name,
                     after=after,
                     execution=execution,
+                    requirements=requires,
                 )
 
             return decorator
@@ -79,6 +85,7 @@ class StageBuilder:
                 name=name,
                 after=after,
                 execution=execution,
+                requirements=requires,
             )
         if name is not None:
             raise WorkflowError("name applies only to imperative tasks")
@@ -87,6 +94,7 @@ class StageBuilder:
             item,
             after=after,
             execution=execution,
+            requirements=requires,
         )
 
 
@@ -168,11 +176,12 @@ class Pipeline:
         name: str | None,
         after: Iterable[NodeRef | Callable[[Any], Any]],
         execution: Any,
+        requirements: Iterable[Requirement],
     ) -> Callable[[Any], Any]:
         ref = NodeRef(name or function.__name__.replace("_", "-"), stage)
         after_refs = tuple(self._resolve_ref(item) for item in after)
         self._entries[stage].append(
-            TaskDeclaration(function, ref, after_refs, execution)
+            TaskDeclaration(function, ref, after_refs, execution, tuple(requirements))
         )
         self._task_refs[function] = ref
         self._task_callables[(stage, ref.name)] = function
@@ -185,10 +194,13 @@ class Pipeline:
         *,
         after: Iterable[NodeRef | Callable[[Any], Any]],
         execution: Any,
+        requirements: Iterable[Requirement],
     ) -> NodeRef:
         ref = NodeRef(self._block_name(block), stage)
         after_refs = tuple(self._resolve_ref(item) for item in after)
-        self._entries[stage].append(BlockDeclaration(block, after_refs, execution))
+        self._entries[stage].append(
+            BlockDeclaration(block, after_refs, execution, tuple(requirements))
+        )
         return ref
 
     def _resolve_ref(self, value: NodeRef | Callable[[Any], Any]) -> NodeRef:

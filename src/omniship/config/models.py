@@ -14,6 +14,7 @@ class NodeConfig(BaseModel):
     if_: dict[str, Any] | str | None = Field(default=None, alias="if")
     when: dict[str, Any] | None = Field(default=None)
     execution: Any = Field(default=None, exclude=True)
+    requirements: tuple[Any, ...] = Field(default=(), exclude=True)
 
     @property
     def condition(self) -> dict[str, Any] | str | None:

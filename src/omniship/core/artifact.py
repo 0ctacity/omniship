@@ -2,7 +2,36 @@
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Iterator, Mapping
+from string import hexdigits
+from typing import Iterable, Iterator, Mapping
+
+from omniship.core.execution import ExecutionHost
+from omniship.core.stage import Stage
+
+
+@dataclass(frozen=True, slots=True)
+class ArtifactDigest:
+    """A content digest recorded when an artifact is bundled."""
+
+    algorithm: str
+    value: str
+
+    def __post_init__(self) -> None:
+        if self.algorithm != "sha256":
+            raise ValueError("Unsupported artifact digest algorithm")
+        if len(self.value) != 64 or any(char not in hexdigits for char in self.value):
+            raise ValueError("Artifact SHA-256 digest must contain 64 hex characters")
+        object.__setattr__(self, "value", self.value.lower())
+
+
+@dataclass(frozen=True, slots=True)
+class ArtifactProvenance:
+    """Execution identity associated with an artifact producer."""
+
+    stage: Stage | None = None
+    task: str | None = None
+    revision: str | None = None
+    host: ExecutionHost | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -12,6 +41,8 @@ class Artifact:
     path: Path
     name: str
     metadata: Mapping[str, str] = field(default_factory=dict)
+    digest: ArtifactDigest | None = None
+    provenance: ArtifactProvenance | None = None
 
     @classmethod
     def from_path(
@@ -19,6 +50,8 @@ class Artifact:
         path: str | Path,
         name: str | None = None,
         metadata: Mapping[str, str] | None = None,
+        digest: ArtifactDigest | None = None,
+        provenance: ArtifactProvenance | None = None,
     ) -> "Artifact":
         """Create an artifact with an absolute path and copied metadata."""
 
@@ -27,6 +60,8 @@ class Artifact:
             path=p,
             name=name or p.name,
             metadata=dict(metadata or {}),
+            digest=digest,
+            provenance=provenance,
         )
 
 
@@ -68,3 +103,30 @@ class ArtifactSet:
         """Return a shallow copy suitable for operation inputs."""
 
         return list(self._artifacts)
+
+    def require(
+        self,
+        names: Iterable[str],
+        *,
+        exact: bool = False,
+    ) -> tuple[Artifact, ...]:
+        """Return required named artifacts or reject an incomplete artifact set."""
+
+        requested = tuple(names)
+        selected = tuple(
+            artifact for name in requested if (artifact := self.get(name)) is not None
+        )
+        selected_names = {artifact.name for artifact in selected}
+        missing = [name for name in requested if name not in selected_names]
+        if missing:
+            raise ValueError(f"Missing required artifacts: {', '.join(missing)}")
+        if exact:
+            requested_names = set(requested)
+            unexpected = [
+                artifact.name
+                for artifact in self._artifacts
+                if artifact.name not in requested_names
+            ]
+            if unexpected:
+                raise ValueError(f"Unexpected artifacts: {', '.join(unexpected)}")
+        return selected

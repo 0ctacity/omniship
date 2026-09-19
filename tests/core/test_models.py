@@ -1,12 +1,21 @@
+import json
 from pathlib import Path
 
-from omniship.core.artifact import Artifact, ArtifactSet
+import pytest
+
+from omniship.core.artifact import (
+    Artifact,
+    ArtifactDigest,
+    ArtifactProvenance,
+    ArtifactSet,
+)
 from omniship.core.artifact_bundle import (
     export_artifacts,
     import_artifact_bundles,
     import_artifacts,
 )
 from omniship.core.context import ExecutionContext
+from omniship.core.execution import Architecture, ExecutionHost, OperatingSystem
 from omniship.core.result import NodeResult, NodeStatus
 from omniship.core.stage import Stage
 
@@ -37,13 +46,31 @@ def test_artifact_and_set(tmp_path: Path):
     assert len(aset.to_list()) == 2
 
 
+def test_artifact_digest_rejects_untrusted_manifest_values() -> None:
+    with pytest.raises(ValueError, match="SHA-256"):
+        ArtifactDigest("sha256", "not-a-digest")
+    with pytest.raises(ValueError, match="algorithm"):
+        ArtifactDigest("md5", "0" * 32)
+
+
 def test_artifact_bundle_round_trips_files_and_metadata(tmp_path: Path) -> None:
     wheel = tmp_path / "dist" / "demo.whl"
     wheel.parent.mkdir()
     wheel.write_bytes(b"wheel")
     artifacts = ArtifactSet()
+    provenance = ArtifactProvenance(
+        stage=Stage.BUILD,
+        task="wheel",
+        revision="abc123",
+        host=ExecutionHost(OperatingSystem.LINUX, Architecture.X86_64),
+    )
     artifacts.add(
-        Artifact.from_path(wheel, name="python-wheel", metadata={"kind": "wheel"})
+        Artifact.from_path(
+            wheel,
+            name="python-wheel",
+            metadata={"kind": "wheel"},
+            provenance=provenance,
+        )
     )
     bundle = tmp_path / "handoff"
 
@@ -55,6 +82,59 @@ def test_artifact_bundle_round_trips_files_and_metadata(tmp_path: Path) -> None:
     assert artifact is not None
     assert artifact.path.read_bytes() == b"wheel"
     assert artifact.metadata == {"kind": "wheel"}
+    assert artifact.digest is not None
+    assert artifact.digest.algorithm == "sha256"
+    assert artifact.provenance == provenance
+
+    manifest = json.loads((bundle / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["version"] == 2
+    assert manifest["artifacts"][0]["digest"] == {
+        "algorithm": "sha256",
+        "value": artifact.digest.value,
+    }
+
+
+def test_artifact_bundle_rejects_tampered_content(tmp_path: Path) -> None:
+    source = tmp_path / "binary"
+    source.write_bytes(b"trusted")
+    artifacts = ArtifactSet()
+    artifacts.add(Artifact.from_path(source))
+    bundle = tmp_path / "handoff"
+    export_artifacts(artifacts, bundle)
+    stored = next((bundle / "items").rglob("binary"))
+    stored.write_bytes(b"tampered")
+
+    with pytest.raises(ValueError, match="digest mismatch"):
+        import_artifacts(bundle)
+
+
+@pytest.mark.parametrize(
+    "entry_update",
+    [
+        {"path": 42},
+        {"name": 42},
+        {"metadata": []},
+        {"metadata": {"kind": 42}},
+        {"provenance": {"task": 42}},
+    ],
+)
+def test_artifact_bundle_rejects_malformed_manifest_fields(
+    tmp_path: Path,
+    entry_update: dict[str, object],
+) -> None:
+    source = tmp_path / "binary"
+    source.write_bytes(b"trusted")
+    bundle = tmp_path / "handoff"
+    artifacts = ArtifactSet()
+    artifacts.add(Artifact.from_path(source))
+    export_artifacts(artifacts, bundle)
+    manifest_path = bundle / "manifest.json"
+    document = json.loads(manifest_path.read_text(encoding="utf-8"))
+    document["artifacts"][0].update(entry_update)
+    manifest_path.write_text(json.dumps(document), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="artifact manifest|provenance"):
+        import_artifacts(bundle)
 
 
 def test_artifact_bundle_round_trips_directories(tmp_path: Path) -> None:
@@ -116,5 +196,55 @@ def test_execution_context(tmp_path: Path):
     res = NodeResult(status=NodeStatus.SUCCESS, artifacts=(art,))
     ctx.record_result("node1", res)
 
-    assert ctx.results["node1"] == res
-    assert ctx.get_artifact(art.name) == art
+    assert ctx.results["node1"].status == res.status
+    recorded_artifact = ctx.get_artifact(art.name)
+    assert recorded_artifact is not None
+    assert recorded_artifact.path == art.path
+    assert recorded_artifact.provenance is not None
+
+
+def test_execution_context_adds_missing_artifact_provenance(tmp_path: Path) -> None:
+    host = ExecutionHost(OperatingSystem.MACOS, Architecture.ARM64)
+    context = ExecutionContext(
+        workspace_root=tmp_path,
+        stage=Stage.BUILD,
+        host=host,
+        revision="abc123",
+    )
+    binary = tmp_path / "tool"
+    binary.write_bytes(b"binary")
+
+    context.record_result(
+        "package",
+        NodeResult(
+            status=NodeStatus.SUCCESS,
+            artifacts=(Artifact.from_path(binary),),
+        ),
+    )
+
+    artifact = context.get_artifact("tool")
+    assert artifact is not None
+    assert artifact.provenance == ArtifactProvenance(
+        stage=Stage.BUILD,
+        task="package",
+        revision="abc123",
+        host=host,
+    )
+
+
+def test_artifact_set_requires_an_exact_named_set(tmp_path: Path) -> None:
+    first = tmp_path / "first"
+    second = tmp_path / "second"
+    first.touch()
+    second.touch()
+    artifacts = ArtifactSet()
+    artifacts.add(Artifact.from_path(first, name="linux"))
+    artifacts.add(Artifact.from_path(second, name="macos"))
+
+    selected = artifacts.require(["linux", "macos"], exact=True)
+
+    assert tuple(artifact.name for artifact in selected) == ("linux", "macos")
+    with pytest.raises(ValueError, match="Missing required artifacts: windows"):
+        artifacts.require(["linux", "windows"])
+    with pytest.raises(ValueError, match="Unexpected artifacts: macos"):
+        artifacts.require(["linux"], exact=True)
