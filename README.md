@@ -21,6 +21,7 @@ still change.
 - [Writing tasks](#writing-tasks)
 - [Artifacts](#artifacts)
 - [GitHub Actions](#github-actions)
+- [Language plugins](#language-plugins)
 - [Dependency locking](#dependency-locking)
 - [Logging](#logging)
 - [Plugins and recipes](#plugins-and-recipes)
@@ -406,6 +407,75 @@ Before imported artifacts reach the task, the generated job verifies the
 source workflow conclusion and revision. Cross-repository private artifacts
 need a secret whose token can read Actions in the source repository.
 
+## Language plugins
+
+Official Node.js, Bun, Go, Rust, and Zig plugins provide typed toolchain
+requirements, reusable blocks, and matching imperative facades. Toolchain
+versions must be exact or come from a committed version file; OmniShip does
+not silently select `latest` or `stable`.
+
+Node and Bun test/build/publish blocks install locked dependencies inside the
+same CI job by default. This is deliberate: an `after` dependency creates a
+new job and does not preserve a previous job's filesystem. Set `install=False`
+only when the task provisions dependencies another way.
+
+```python
+from omniship.plugins.go import GoArch, GoBuild, GoOS, GoTarget, GoToolchain
+from omniship.plugins.node import NodeTest, NodeToolchain
+
+
+@pipeline.check
+def check(stage):
+    stage.task(
+        NodeTest(),
+        requires=[NodeToolchain(version_file=".node-version")],
+    )
+
+
+@pipeline.build
+def build(stage):
+    stage.task(
+        GoBuild(
+            output="dist/server",
+            target=GoTarget(GoOS.LINUX, GoArch.ARM64),
+        ),
+        requires=[GoToolchain(version_file="go.mod")],
+    )
+```
+
+Go target selection belongs to `GoBuild`; it is not generic runner metadata.
+Omitting `target` builds natively for the selected runner.
+
+The publisher blocks are `NpmPublish`, `PyPIPublish`, and `CargoPublish`.
+Token-based publishing reads `NODE_AUTH_TOKEN`, `UV_PUBLISH_TOKEN`, or
+`CARGO_REGISTRY_TOKEN` from the job environment. Token values are never stored
+in `workflow.py`, `omniship.yaml`, or command arguments:
+
+```python
+from omniship.plugins.node import NpmPublish
+
+
+@pipeline.ship
+def ship(stage):
+    stage.task(
+        NpmPublish(access="public"),
+        execution=github.job(
+            env={"NODE_AUTH_TOKEN": github.secret("NPM_TOKEN")},
+        ),
+    )
+```
+
+npm and PyPI can instead use trusted publishing. Setting
+`trusted_publishing=True` automatically requests the provider identity-token
+permission, so no registry token is needed:
+
+```python
+from omniship.plugins.python import PyPIPublish
+
+
+stage.task(PyPIPublish(trusted_publishing=True))
+```
+
 ## Dependency locking
 
 OmniShip never resolves “latest” while generating workflows. Exact GitHub
@@ -480,7 +550,12 @@ Current operations:
 | Provider | Operations |
 | --- | --- |
 | Core | `core/command`, `core/noop`, `core/python` |
-| Python | `python/ruff`, `python/pytest`, `python/wheel` |
+| Python | `python/ruff`, `python/pytest`, `python/wheel`, `python/pypi-publish` |
+| Node.js | `node/install`, `node/test`, `node/build`, `node/npm-publish` |
+| Bun | `bun/install`, `bun/test`, `bun/build` |
+| Go | `go/test`, `go/build` |
+| Rust | `rust/cargo-test`, `rust/cargo-build`, `rust/cargo-publish` |
+| Zig | `zig/test`, `zig/build` |
 | Packaging | `packaging/tar-gz`, `packaging/zip`, `packaging/sha256-manifest` |
 | GitHub | `github/release`, `github/pages`, `github/tag` |
 
@@ -531,9 +606,9 @@ support separated local Build and Ship runs.
   designed for additional provider plugins.
 - Generated GitHub workflows currently assume a uv-managed Python project and
   install dependencies with `uv sync --all-groups --locked`.
-- The bundled typed providers cover Python checks/builds, portable packaging,
-  GitHub Releases, tags, and Pages. Language-specific toolchains and registry
-  publishers remain external or future plugins.
+- The bundled typed providers cover Python, Node.js, Bun, Go, Rust, Zig,
+  portable packaging, GitHub Releases, tags, and Pages. Additional ecosystems
+  remain external plugins.
 - `workflow.py` is trusted Python code. Generation imports it, and imperative
   nodes import it again when they execute.
 - `omniship.yaml` is executable directly, but Python workflow definitions are

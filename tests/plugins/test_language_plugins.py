@@ -1,0 +1,437 @@
+from pathlib import Path
+
+import pytest
+import yaml
+
+from omniship import Pipeline
+from omniship.config.models import NodeConfig, OmniShipConfig
+from omniship.core.context import ExecutionContext
+from omniship.core.execution import IdentityToken
+from omniship.core.node import NodeInputs
+from omniship.core.stage import Stage
+from omniship.plugins.bun import (
+    Bun,
+    BunBuild,
+    BunInstall,
+    BunTest,
+    BunToolchain,
+    register_bun_plugin,
+)
+from omniship.plugins.github import GitHubActions, GitHubPermission
+from omniship.plugins.github.actions import GitHubActionsGenerator
+from omniship.plugins.github.operations import register_github_plugin
+from omniship.plugins.go import (
+    Go,
+    GoArch,
+    GoBuild,
+    GoOS,
+    GoTarget,
+    GoTest,
+    GoToolchain,
+)
+from omniship.plugins.node import (
+    Node,
+    NodeBuild,
+    NodeInstall,
+    NodeTest,
+    NodeToolchain,
+    NpmPublish,
+    register_node_plugin,
+)
+from omniship.plugins.python import PyPIPublish, Python
+from omniship.plugins.registry import PluginRegistry
+from omniship.plugins.rust import (
+    CargoBuild,
+    CargoPublish,
+    CargoTest,
+    Rust,
+    RustToolchain,
+)
+from omniship.plugins.zig import Zig, ZigBuild, ZigTest, ZigToolchain
+from omniship.runtime import TaskContext, TaskFailure
+from omniship.workflow.compiler import compile_pipeline
+
+
+@pytest.mark.parametrize(
+    ("requirement", "dependency", "inputs"),
+    [
+        (
+            NodeToolchain(version="24.8.0"),
+            "setup-node",
+            {"node-version": "24.8.0", "package-manager-cache": False},
+        ),
+        (
+            BunToolchain(version="1.3.3"),
+            "setup-bun",
+            {"bun-version": "1.3.3"},
+        ),
+        (
+            GoToolchain(version_file="go.mod"),
+            "setup-go",
+            {"go-version-file": "go.mod", "cache": False},
+        ),
+        (
+            RustToolchain(toolchain="1.85.0", components=["clippy"]),
+            "setup-rust-toolchain",
+            {"toolchain": "1.85.0", "components": "clippy", "cache": False},
+        ),
+        (
+            ZigToolchain(version="0.15.1"),
+            "setup-zig",
+            {"version": "0.15.1"},
+        ),
+    ],
+)
+def test_toolchains_resolve_to_locked_github_actions(
+    requirement,
+    dependency: str,
+    inputs: dict[str, object],
+) -> None:
+    step = requirement.github()
+
+    assert step.dependency == dependency
+    assert step.inputs == inputs
+
+
+def test_toolchain_setup_uses_the_locked_action_pin(tmp_path: Path) -> None:
+    registry = PluginRegistry()
+    register_node_plugin(registry)
+    github = GitHubActions()
+    config = OmniShipConfig(
+        check={
+            "verify": NodeConfig(
+                uses="core/noop",
+                requirements=(NodeToolchain(version="24.8.0"),),
+            )
+        }
+    )
+
+    generated = GitHubActionsGenerator(registry).generate(
+        config,
+        tmp_path / "workflow.py",
+        tmp_path / "omniship.yaml",
+        Pipeline(targets=[github]),
+    )
+    check_file = next(item for item in generated if item.path.name == "check.yml")
+    document = yaml.safe_load(check_file.content)
+
+    assert {
+        "name": "Set up Node.js",
+        "uses": (
+            "actions/setup-node@"
+            "820762786026740c76f36085b0efc47a31fe5020"
+        ),
+        "with": {
+            "node-version": "24.8.0",
+            "package-manager-cache": False,
+        },
+    } in document["jobs"]["check-verify"]["steps"]
+
+
+@pytest.mark.parametrize(
+    "factory",
+    [
+        lambda: NodeToolchain(),
+        lambda: NodeToolchain(version="24", version_file=".node-version"),
+        lambda: NodeToolchain(version_file="C:\\outside\\.node-version"),
+        lambda: BunToolchain(),
+        lambda: GoToolchain(),
+        lambda: RustToolchain(toolchain="stable"),
+        lambda: RustToolchain(toolchain="1.85.0", components="clippy"),
+        lambda: ZigToolchain(version="latest"),
+    ],
+)
+def test_toolchains_reject_implicit_or_moving_versions(factory) -> None:
+    with pytest.raises(ValueError):
+        factory()
+
+
+def test_language_blocks_compile_to_plugin_operations(tmp_path: Path) -> None:
+    pipeline = Pipeline()
+
+    @pipeline.check
+    def check(stage):
+        stage.task(NodeInstall())
+        stage.task(NodeTest())
+        stage.task(BunInstall())
+        stage.task(BunTest())
+        stage.task(GoTest())
+        stage.task(ZigTest())
+        stage.task(CargoTest())
+
+    @pipeline.build
+    def build(stage):
+        stage.task(NodeBuild())
+        stage.task(BunBuild())
+        stage.task(GoBuild(output="dist/demo"))
+        stage.task(ZigBuild())
+        stage.task(CargoBuild())
+
+    @pipeline.ship
+    def ship(stage):
+        stage.task(NpmPublish(dry_run=True))
+        stage.task(PyPIPublish(dry_run=True))
+        stage.task(CargoPublish(dry_run=True))
+
+    config = compile_pipeline(pipeline, tmp_path / "workflow.py")
+
+    assert config.check["node-install"].uses == "node/install"
+    assert config.check["bun-test"].uses == "bun/test"
+    assert config.check["go-test"].uses == "go/test"
+    assert config.check["zig-test"].uses == "zig/test"
+    assert config.check["cargo-test"].uses == "rust/cargo-test"
+    assert config.build["go-build"].with_["output"] == "dist/demo"
+    assert config.ship["npm-publish"].uses == "node/npm-publish"
+    assert config.ship["pypi-publish"].uses == "python/pypi-publish"
+    assert config.ship["cargo-publish"].uses == "rust/cargo-publish"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("register", "operation_name", "facade", "params"),
+    [
+        (
+            register_node_plugin,
+            "node/test",
+            Node,
+            {"script": "test", "install": True, "clean": True},
+        ),
+        (
+            register_bun_plugin,
+            "bun/test",
+            Bun,
+            {"install": True, "frozen_lockfile": True},
+        ),
+    ],
+)
+async def test_test_blocks_install_dependencies_in_the_same_job(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    register,
+    operation_name: str,
+    facade,
+    params: dict[str, object],
+) -> None:
+    calls: list[str] = []
+    monkeypatch.setattr(
+        facade,
+        "install",
+        lambda self, **kwargs: calls.append("install"),
+    )
+    monkeypatch.setattr(
+        facade,
+        "test",
+        lambda self, **kwargs: calls.append("test"),
+    )
+    registry = PluginRegistry()
+    register(registry)
+
+    result = await registry.get_operation(operation_name).execute(
+        ExecutionContext(workspace_root=tmp_path, stage=Stage.CHECK),
+        NodeInputs(params=params),
+    )
+
+    assert result.is_success
+    assert calls == ["install", "test"]
+
+
+@pytest.mark.asyncio
+async def test_npm_publish_installs_dependencies_in_the_same_job(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+    monkeypatch.setattr(
+        Node,
+        "install",
+        lambda self, **kwargs: calls.append("install"),
+    )
+    monkeypatch.setattr(
+        Node,
+        "publish",
+        lambda self, **kwargs: calls.append("publish"),
+    )
+    registry = PluginRegistry()
+    register_node_plugin(registry)
+
+    result = await registry.get_operation("node/npm-publish").execute(
+        ExecutionContext(workspace_root=tmp_path, stage=Stage.SHIP),
+        NodeInputs(
+            params={
+                "install": True,
+                "clean": True,
+                "dry_run": True,
+            }
+        ),
+    )
+
+    assert result.is_success
+    assert calls == ["install", "publish"]
+
+
+def test_trusted_publishers_declare_identity_requirement(tmp_path: Path) -> None:
+    pipeline = Pipeline()
+
+    @pipeline.ship
+    def ship(stage):
+        stage.task(NpmPublish(trusted_publishing=True))
+        stage.task(PyPIPublish(trusted_publishing=True))
+
+    config = compile_pipeline(pipeline, tmp_path / "workflow.py")
+
+    for node in config.ship.values():
+        assert node.requirements == (IdentityToken(),)
+
+
+def test_github_grants_identity_permission_for_trusted_publishing(
+    tmp_path: Path,
+) -> None:
+    registry = PluginRegistry()
+    register_github_plugin(registry)
+    config = OmniShipConfig(
+        ship={
+            "publish": NodeConfig(
+                uses="core/noop",
+                requirements=(IdentityToken(),),
+            )
+        }
+    )
+
+    generated = GitHubActionsGenerator(registry).generate(
+        config,
+        tmp_path / "workflow.py",
+        tmp_path / "omniship.yaml",
+        Pipeline(targets=[GitHubActions()]),
+    )
+    ship_file = next(item for item in generated if item.path.name == "ship.yml")
+    document = yaml.safe_load(ship_file.content)
+
+    assert document["jobs"]["ship-publish"]["permissions"] == {
+        "contents": GitHubPermission.READ.value,
+        "id-token": GitHubPermission.WRITE.value,
+    }
+
+
+def test_go_target_is_build_specific_and_typed() -> None:
+    target = GoTarget(GoOS.LINUX, GoArch.ARM64)
+    assert target.environment == {"GOOS": "linux", "GOARCH": "arm64"}
+
+    with pytest.raises(TypeError):
+        GoTarget("linux", GoArch.ARM64)  # type: ignore[arg-type]
+
+
+def test_go_build_rejects_output_outside_workspace_before_execution(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    executed = False
+
+    def run(self, arguments, *, env=None):
+        nonlocal executed
+        executed = True
+
+    monkeypatch.setattr(Go, "_run", run)
+
+    with pytest.raises(ValueError, match="inside the workspace"):
+        Go(TaskContext(tmp_path, {})).build(output="../outside")
+
+    assert executed is False
+
+
+def test_imperative_facades_build_expected_commands(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[list[str], dict[str, str]]] = []
+
+    def run(self, arguments, *, env=None):
+        calls.append((list(arguments), dict(env or {})))
+        if list(arguments[:2]) == ["go", "build"]:
+            output = tmp_path / arguments[arguments.index("-o") + 1]
+            output.parent.mkdir(parents=True, exist_ok=True)
+            output.write_bytes(b"binary")
+
+    for facade in (Node, Bun, Go, Zig, Rust, Python):
+        monkeypatch.setattr(facade, "_run", run, raising=False)
+
+    context = TaskContext(tmp_path, {})
+    Node(context).install()
+    Bun(context).test()
+    Go(context).build(
+        output="dist/demo",
+        target=GoTarget(GoOS.LINUX, GoArch.ARM64),
+    )
+    Zig(context).build(optimize="ReleaseSafe")
+    Rust(context).build(release=True)
+
+    assert calls == [
+        (["npm", "ci"], {}),
+        (["bun", "test"], {}),
+        (
+            ["go", "build", "-o", "dist/demo", "."],
+            {"GOOS": "linux", "GOARCH": "arm64"},
+        ),
+        (["zig", "build", "-Doptimize=ReleaseSafe"], {}),
+        (["cargo", "build", "--release"], {}),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("publish", "message"),
+    [
+        (lambda context: Node(context).publish(), "NODE_AUTH_TOKEN"),
+        (lambda context: Python(context).publish(), "UV_PUBLISH_TOKEN"),
+        (lambda context: Rust(context).publish(), "CARGO_REGISTRY_TOKEN"),
+    ],
+)
+def test_publishers_require_runtime_credentials(
+    tmp_path: Path,
+    publish,
+    message: str,
+) -> None:
+    with pytest.raises(TaskFailure, match=message):
+        publish(TaskContext(tmp_path, {}))
+
+
+def test_publishers_never_put_tokens_in_command_arguments(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    commands: list[list[str]] = []
+
+    def run(self, arguments, *, env=None):
+        commands.append(list(arguments))
+
+    monkeypatch.setattr(Node, "_run", run, raising=False)
+    monkeypatch.setattr(Python, "_run", run, raising=False)
+    monkeypatch.setattr(Rust, "_run", run, raising=False)
+
+    Node(TaskContext(tmp_path, {"NODE_AUTH_TOKEN": "npm-secret"})).publish()
+    Python(TaskContext(tmp_path, {"UV_PUBLISH_TOKEN": "pypi-secret"})).publish()
+    Rust(TaskContext(tmp_path, {"CARGO_REGISTRY_TOKEN": "cargo-secret"})).publish()
+
+    flattened = " ".join(argument for command in commands for argument in command)
+    assert "npm-secret" not in flattened
+    assert "pypi-secret" not in flattened
+    assert "cargo-secret" not in flattened
+
+
+def test_trusted_publishers_do_not_require_registry_tokens(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    commands: list[list[str]] = []
+
+    def run(self, arguments, *, env=None):
+        commands.append(list(arguments))
+
+    monkeypatch.setattr(Node, "_run", run, raising=False)
+    monkeypatch.setattr(Python, "_run", run, raising=False)
+
+    Node(TaskContext(tmp_path, {})).publish(trusted_publishing=True)
+    Python(TaskContext(tmp_path, {})).publish(trusted_publishing=True)
+
+    assert commands == [
+        ["npm", "publish", "--provenance"],
+        ["uv", "publish", "--trusted-publishing", "always"],
+    ]

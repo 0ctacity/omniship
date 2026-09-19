@@ -4,6 +4,7 @@ import subprocess
 import sys
 import tempfile
 import tomllib
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Mapping
@@ -107,4 +108,41 @@ class Python(PythonTools):
 
     def __init__(self, context: TaskContext) -> None:
         super().__init__(context.workspace, context.env, context.log)
+        self.context = context
         self.project = ProjectTools(context.workspace)
+
+    def publish(
+        self,
+        *,
+        files: Iterable[str] = (),
+        publish_url: str | None = None,
+        trusted_publishing: bool = False,
+        dry_run: bool = False,
+    ) -> None:
+        if (
+            not trusted_publishing
+            and not dry_run
+            and not self.env.get("UV_PUBLISH_TOKEN")
+        ):
+            raise TaskFailure(
+                "UV_PUBLISH_TOKEN is required when dry_run is false"
+            )
+        selected = tuple(files)
+        if not selected:
+            selected = tuple(
+                str(artifact.path)
+                for artifact in self.context.artifacts
+                if artifact.path.is_file()
+                and (
+                    artifact.path.suffix == ".whl"
+                    or artifact.path.name.endswith(".tar.gz")
+                )
+            )
+        arguments = ["uv", "publish", *selected]
+        if publish_url is not None:
+            arguments.extend(["--publish-url", publish_url])
+        if trusted_publishing:
+            arguments.extend(["--trusted-publishing", "always"])
+        if dry_run:
+            arguments.append("--dry-run")
+        self._run(arguments)

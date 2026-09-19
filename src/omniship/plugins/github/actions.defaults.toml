@@ -41,3 +41,33 @@ repository = "actions/deploy-pages"
 major = 5
 version = "v5.0.1"
 sha = "368f82528645a54fb793d4d04e342629a3f51346"
+
+[github.actions.setup-node]
+repository = "actions/setup-node"
+major = 7
+version = "v7.0.0"
+sha = "820762786026740c76f36085b0efc47a31fe5020"
+
+[github.actions.setup-bun]
+repository = "oven-sh/setup-bun"
+major = 2
+version = "v2.2.0"
+sha = "0c5077e51419868618aeaa5fe8019c62421857d6"
+
+[github.actions.setup-go]
+repository = "actions/setup-go"
+major = 7
+version = "v7.0.0"
+sha = "b7ad1dad31e06c5925ef5d2fc7ad053ef454303e"
+
+[github.actions.setup-rust-toolchain]
+repository = "actions-rust-lang/setup-rust-toolchain"
+major = 2
+version = "v2.0.0"
+sha = "ecabd13d1c56bd1345c230e542e9144811ad706f"
+
+[github.actions.setup-zig]
+repository = "mlugg/setup-zig"
+major = 2
+version = "v2.2.1"
+sha = "d1434d08867e3ee9daa34448df10607b98908d29"

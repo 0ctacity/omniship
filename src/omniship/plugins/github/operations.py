@@ -5,6 +5,7 @@ import time
 from pydantic import BaseModel, ConfigDict, Field
 
 from omniship.core.context import ExecutionContext
+from omniship.core.execution import IdentityToken
 from omniship.core.node import NodeInputs
 from omniship.core.result import NodeResult, NodeStatus
 from omniship.core.stage import Stage
@@ -12,7 +13,13 @@ from omniship.plugins.metadata import OperationDefinition
 from omniship.plugins.registry import PluginRegistry
 from omniship.runtime import TaskContext
 
-from .actions import GitHubActionsGenerator, GitHubCheckout, GitHubWorkflowArtifacts
+from .actions import (
+    GitHubActionsGenerator,
+    GitHubCheckout,
+    GitHubPermission,
+    GitHubPermissions,
+    GitHubWorkflowArtifacts,
+)
 from .runtime import GitHub
 
 
@@ -275,5 +282,13 @@ def register_github_plugin(registry: PluginRegistry) -> None:
         "github/actions",
         GitHubWorkflowArtifacts,
         lambda requirement: requirement,
+    )
+    registry.register_requirement_resolver(
+        "github/actions",
+        IdentityToken,
+        lambda requirement: GitHubPermissions(
+            contents=GitHubPermission.READ,
+            id_token=GitHubPermission.WRITE,
+        ),
     )
     registry.register_workflow_generator(GitHubActionsGenerator(registry))

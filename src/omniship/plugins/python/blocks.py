@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 from pathlib import Path
 
+from omniship.core.execution import IdentityToken
 from omniship.core.stage import Stage
 from omniship.workflow.errors import WorkflowError
 from omniship.workflow.model import NodeSpec
@@ -54,3 +55,31 @@ class Wheel:
         if self.output != "dist":
             params["output"] = self.output
         return [NodeSpec(self.name, stage, "python/wheel", params)]
+
+
+@dataclass(frozen=True)
+class PyPIPublish:
+    files: tuple[str, ...] = ()
+    publish_url: str | None = None
+    trusted_publishing: bool = False
+    dry_run: bool = False
+    name: str = "pypi-publish"
+
+    def compile(self, stage: Stage, workspace_root: Path) -> list[NodeSpec]:
+        if stage != Stage.SHIP:
+            raise WorkflowError("PyPIPublish can only be used in the ship stage")
+        requirements = (IdentityToken(),) if self.trusted_publishing else ()
+        return [
+            NodeSpec(
+                self.name,
+                stage,
+                "python/pypi-publish",
+                {
+                    "files": list(self.files),
+                    "publish_url": self.publish_url,
+                    "trusted_publishing": self.trusted_publishing,
+                    "dry_run": self.dry_run,
+                },
+                requirements=requirements,
+            )
+        ]

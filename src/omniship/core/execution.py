@@ -11,6 +11,13 @@ from typing import Iterable, Mapping
 REVISION_ENV = "OMNISHIP_REVISION"
 
 
+@dataclass(frozen=True, slots=True)
+class IdentityToken:
+    """A runtime identity token required for trusted publishing."""
+
+    name: str = "core/identity-token"
+
+
 class OperatingSystem(StrEnum):
     """Operating system family of the machine executing a task."""
 

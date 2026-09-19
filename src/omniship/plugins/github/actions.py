@@ -481,6 +481,20 @@ class GitHubWorkflowArtifacts:
             raise TypeError("workflow artifact token must be a SecretRef")
 
 
+@dataclass(frozen=True, slots=True)
+class GitHubActionStep:
+    """A plugin-provided step backed by an OmniShip-locked action."""
+
+    dependency: str
+    name: str
+    inputs: Mapping[str, object] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        if not self.dependency or not self.name:
+            raise ValueError("locked action steps require a dependency and name")
+        object.__setattr__(self, "inputs", dict(self.inputs))
+
+
 def _render_requirement_value(value: int | str | GitHubStringInput) -> str:
     if isinstance(value, GitHubStringInput):
         return f"${{{{ inputs.{value.name} }}}}"
@@ -785,6 +799,10 @@ class GitHubActionsGenerator:
                         "GitHub Pages deployment requires exactly one runner"
                     )
 
+                resolved_requirements = self.registry.resolve_requirements(
+                    self.name,
+                    node.requirements,
+                )
                 workflow_artifacts = tuple(
                     requirement
                     for requirement in node.requirements
@@ -799,6 +817,12 @@ class GitHubActionsGenerator:
                         ),
                         node_name=node_name,
                     )
+                for resolved in resolved_requirements:
+                    if isinstance(resolved, GitHubPermissions):
+                        required_permissions = required_permissions.with_minimum(
+                            resolved,
+                            node_name=node_name,
+                        )
                 if node.uses in {"github/release", "github/tag"} and not node.with_.get(
                     "dry_run", False
                 ):
@@ -836,11 +860,20 @@ class GitHubActionsGenerator:
                 steps = setup_steps()
                 imports_artifacts = False
                 for requirement_index, resolved in enumerate(
-                    self.registry.resolve_requirements(
-                        self.name, node.requirements
-                    ),
+                    resolved_requirements,
                     start=1,
                 ):
+                    if isinstance(resolved, GitHubPermissions):
+                        continue
+                    if isinstance(resolved, GitHubActionStep):
+                        step: dict[str, object] = {
+                            "name": resolved.name,
+                            "uses": action_lock.reference(resolved.dependency),
+                        }
+                        if resolved.inputs:
+                            step["with"] = dict(resolved.inputs)
+                        steps.append(step)
+                        continue
                     if isinstance(resolved, GitHubWorkflowArtifacts):
                         run_id = _render_requirement_value(resolved.run_id)
                         revision = (

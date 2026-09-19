@@ -14,7 +14,9 @@ from omniship.core.process import stream_process
 from omniship.core.result import NodeResult, NodeStatus
 from omniship.core.stage import Stage
 from omniship.plugins.metadata import OperationDefinition
+from omniship.plugins.python.runtime import Python
 from omniship.plugins.python.wheels import publish_staged_wheels
+from omniship.plugins.tooling import FacadeOperation
 
 
 class RuffConfig(BaseModel):
@@ -35,6 +37,13 @@ class PytestConfig(BaseModel):
 class WheelConfig(BaseModel):
     verify: bool = True
     output: str = "dist"
+
+
+class PyPIPublishConfig(BaseModel):
+    files: list[str] = Field(default_factory=list)
+    publish_url: str | None = None
+    trusted_publishing: bool = False
+    dry_run: bool = False
 
 
 async def _execute_tool(
@@ -216,5 +225,25 @@ def get_python_definitions() -> tuple[OperationDefinition, ...]:
             stages=WheelOperation.stages,
             description="Build Python wheel artifacts",
             config_model=WheelConfig,
+        ),
+        OperationDefinition(
+            name="python/pypi-publish",
+            stages=frozenset({Stage.SHIP}),
+            description="Publish Python distributions to a package index",
+            config_model=PyPIPublishConfig,
+        ),
+    )
+
+
+def get_pypi_publish_operation() -> FacadeOperation:
+    return FacadeOperation(
+        "python/pypi-publish",
+        Stage.SHIP,
+        PyPIPublishConfig,
+        lambda ctx, cfg: Python(ctx).publish(
+            files=cfg.files,
+            publish_url=cfg.publish_url,
+            trusted_publishing=cfg.trusted_publishing,
+            dry_run=cfg.dry_run,
         ),
     )
