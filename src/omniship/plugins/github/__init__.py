@@ -2,6 +2,7 @@ from .actions import (
     GitHubActions,
     GitHubActionStep,
     GitHubBooleanInput,
+    GitHubBootstrap,
     GitHubCheckout,
     GitHubJob,
     GitHubPermission,
@@ -22,6 +23,7 @@ from .runtime import GitHub, GitHubPagesResult, GitHubTagResult
 __all__ = [
     "GitHubActions",
     "GitHubActionStep",
+    "GitHubBootstrap",
     "GitHubBooleanInput",
     "GitHubCheckout",
     "GitHubJob",

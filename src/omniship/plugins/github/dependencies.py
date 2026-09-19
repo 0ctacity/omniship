@@ -7,6 +7,7 @@ import tomllib
 import urllib.request
 from dataclasses import dataclass, replace
 from importlib import resources
+from importlib.metadata import version as distribution_version
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote
@@ -51,6 +52,11 @@ class GitHubActionPin:
 @dataclass(frozen=True)
 class GitHubActionLock:
     actions: dict[str, GitHubActionPin]
+    omniship_version: str
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.omniship_version, str) or not self.omniship_version:
+            raise ValueError("Locked OmniShip version must be a non-empty string")
 
     @classmethod
     def defaults(cls) -> GitHubActionLock:
@@ -78,13 +84,20 @@ class GitHubActionLock:
             entries = document.get("github", {}).get("actions", {})
             if not isinstance(entries, dict):
                 raise ValueError(f"Invalid GitHub Actions lock data in {source}")
+            omniship = document.get("omniship", {})
+            if not isinstance(omniship, dict):
+                raise ValueError(f"Invalid OmniShip dependency data in {source}")
+            omniship_version = omniship.get(
+                "version",
+                distribution_version("omniship"),
+            )
             actions = {
                 name: GitHubActionPin(name=name, **values)
                 for name, values in entries.items()
             }
         except (TypeError, tomllib.TOMLDecodeError) as exc:
             raise ValueError(f"Invalid OmniShip lock file {source}: {exc}") from exc
-        return cls(actions)
+        return cls(actions, omniship_version)
 
     def get(self, name: str) -> GitHubActionPin:
         try:
@@ -113,7 +126,10 @@ class GitHubActionLock:
     def with_pin(self, pin: GitHubActionPin) -> GitHubActionLock:
         actions = dict(self.actions)
         actions[pin.name] = pin
-        return GitHubActionLock(actions)
+        return GitHubActionLock(actions, self.omniship_version)
+
+    def with_omniship_version(self, version: str) -> GitHubActionLock:
+        return GitHubActionLock(dict(self.actions), version)
 
     def validate_compatibility(self, defaults: GitHubActionLock) -> None:
         for name, expected in defaults.actions.items():
@@ -128,7 +144,13 @@ class GitHubActionLock:
                 )
 
     def render(self) -> str:
-        lines = [LOCK_MARKER, f"version = {LOCK_VERSION}"]
+        lines = [
+            LOCK_MARKER,
+            f"version = {LOCK_VERSION}",
+            "",
+            "[omniship]",
+            f"version = {json.dumps(self.omniship_version)}",
+        ]
         for action in self.actions.values():
             lines.extend(
                 [

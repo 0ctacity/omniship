@@ -162,23 +162,28 @@ def test_generate_writes_valid_yaml_and_check_detects_drift(tmp_path: Path) -> N
     assert steps[1] == {
         "uses": "astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4"
     }
-    assert {"run": "uv run omniship generate --check"} in steps
+    assert {
+        "run": "uvx --from omniship==0.1.0 omniship generate --check"
+    } in steps
     assert {
         "name": "Run Ruff",
         "run": (
-            "uv run omniship run-node --stage check --node ruff --config omniship.yaml"
+            "uvx --from omniship==0.1.0 omniship run-node "
+            "--stage check --node ruff --config omniship.yaml"
         ),
     } in lint_job["steps"]
     assert {
         "name": "Run Tests",
         "run": (
-            "uv run omniship run-node --stage check --node tests --config omniship.yaml"
+            "uvx --from omniship==0.1.0 omniship run-node "
+            "--stage check --node tests --config omniship.yaml"
         ),
     } in test_job["steps"]
     assert {
         "name": "Run Wheel",
         "run": (
-            "uv run omniship run-node --stage build --node wheel "
+            "uvx --from omniship==0.1.0 omniship run-node "
+            "--stage build --node wheel "
             "--config omniship.yaml --export-artifacts .omniship/handoff/build-wheel"
         ),
         "env": {"OMNISHIP_REVISION": "${{ github.sha }}"},
@@ -201,7 +206,8 @@ def test_generate_writes_valid_yaml_and_check_detects_drift(tmp_path: Path) -> N
     assert {
         "name": "Run GitHub Release",
         "run": (
-            "uv run omniship run-node --stage ship --node github-release "
+            "uvx --from omniship==0.1.0 omniship run-node "
+            "--stage ship --node github-release "
             "--config omniship.yaml --import-artifacts-root .omniship/imports"
         ),
         "env": {
@@ -280,7 +286,7 @@ def test_generate_compiles_job_controls_secrets_and_caches(tmp_path: Path) -> No
     job = document["jobs"]["build-verify"]
     assert job["timeout-minutes"] == "30"
     assert job["environment"] == "quality"
-    cache_step = job["steps"][3]
+    cache_step = job["steps"][2]
     assert cache_step == {
         "name": "Restore cache 1",
         "uses": "actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9",
@@ -290,7 +296,7 @@ def test_generate_compiles_job_controls_secrets_and_caches(tmp_path: Path) -> No
             "restore-keys": "demo-${{ runner.os }}-\ndemo-",
         },
     }
-    run_step = job["steps"][4]
+    run_step = job["steps"][3]
     assert "--working-directory packages/cli" in run_step["run"]
     assert "working-directory" not in run_step
     assert run_step["shell"] == "bash"
@@ -334,7 +340,7 @@ def test_generate_compiles_external_checkout_requirements(tmp_path: Path) -> Non
         ),
         Loader=yaml.BaseLoader,
     )
-    checkout = document["jobs"]["check-verify"]["steps"][3]
+    checkout = document["jobs"]["check-verify"]["steps"][2]
     assert checkout == {
         "name": "Check out ata-sesli/zova",
         "uses": "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
@@ -389,7 +395,7 @@ def test_generate_compiles_os_specific_system_packages(tmp_path: Path) -> None:
         Loader=yaml.BaseLoader,
     )
     steps = document["jobs"]["check-native"]["steps"]
-    assert steps[3:6] == [
+    assert steps[2:5] == [
         {
             "name": "Install Ubuntu system packages",
             "if": "runner.os == 'Linux'",
@@ -787,7 +793,8 @@ def test_build_node_dependencies_download_predecessor_artifacts(
     assert {
         "name": "Run Package",
         "run": (
-            "uv run omniship run-node --stage build --node package "
+            "uvx --from omniship==0.1.0 omniship run-node "
+            "--stage build --node package "
             "--config omniship.yaml --import-artifacts-root .omniship/imports "
             "--export-artifacts .omniship/handoff/build-package"
         ),
@@ -1182,6 +1189,42 @@ def test_generate_uses_action_versions_from_omniship_lock(tmp_path: Path) -> Non
     assert check["jobs"]["prepare"]["steps"][0] == {
         "uses": f"actions/checkout@{custom_sha}"
     }
+
+
+def test_generate_uses_omniship_version_from_lock(tmp_path: Path) -> None:
+    source = tmp_path / "workflow.py"
+    output = tmp_path / "omniship.yaml"
+    source.write_text(WORKFLOW, encoding="utf-8")
+    runner = CliRunner()
+    initial = runner.invoke(
+        cli,
+        ["generate", "-f", str(source), "-o", str(output)],
+    )
+    assert initial.exit_code == 0, initial.output
+    lock_path = tmp_path / "omniship.lock"
+    lock_path.write_text(
+        lock_path.read_text(encoding="utf-8").replace(
+            '[omniship]\nversion = "0.1.0"',
+            '[omniship]\nversion = "9.8.7"',
+        ),
+        encoding="utf-8",
+    )
+
+    regenerated = runner.invoke(
+        cli,
+        ["generate", "-f", str(source), "-o", str(output)],
+    )
+
+    assert regenerated.exit_code == 0, regenerated.output
+    check = yaml.load(
+        (tmp_path / ".github" / "workflows" / "check.yml").read_text(
+            encoding="utf-8"
+        ),
+        Loader=yaml.BaseLoader,
+    )
+    assert check["jobs"]["prepare"]["steps"][-1]["run"].startswith(
+        "uvx --from omniship==9.8.7 omniship generate"
+    )
 
 
 def test_generate_rejects_github_pages_matrix_deployment(tmp_path: Path) -> None:

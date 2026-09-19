@@ -62,6 +62,11 @@ class GitHubShell(StrEnum):
     SH = "sh"
 
 
+class GitHubBootstrap(StrEnum):
+    ISOLATED = "isolated"
+    WORKSPACE = "workspace"
+
+
 class GitHubPermission(StrEnum):
     NONE = "none"
     READ = "read"
@@ -547,6 +552,7 @@ class GitHubWorkflow:
 @dataclass(frozen=True)
 class GitHubActions:
     name: ClassVar[str] = "github/actions"
+    bootstrap: GitHubBootstrap = GitHubBootstrap.ISOLATED
     default_runner: GitHubRunner = GitHubRunner.UBUNTU_LATEST
     default_permissions: GitHubPermissions = GitHubPermissions(
         contents=GitHubPermission.READ
@@ -556,6 +562,8 @@ class GitHubActions:
     ship: GitHubWorkflow = GitHubWorkflow(file="ship.yml", name="Ship")
 
     def __post_init__(self) -> None:
+        if not isinstance(self.bootstrap, GitHubBootstrap):
+            raise TypeError("bootstrap must be a GitHubBootstrap value")
         if not isinstance(self.default_runner, GitHubRunner):
             raise TypeError("default_runner must be a GitHubRunner value")
         if not isinstance(self.default_permissions, GitHubPermissions):
@@ -736,7 +744,16 @@ class GitHubActionsGenerator:
         source = source_path.resolve().relative_to(workspace_root)
         pipeline_config = config_path.resolve().relative_to(workspace_root)
         workflow_root = workspace_root / ".github" / "workflows"
-        generate_command = ["uv", "run", "omniship", "generate"]
+        if actions.bootstrap == GitHubBootstrap.WORKSPACE:
+            omniship_command = ["uv", "run", "omniship"]
+        else:
+            omniship_command = [
+                "uvx",
+                "--from",
+                f"omniship=={action_lock.omniship_version}",
+                "omniship",
+            ]
+        generate_command = [*omniship_command, "generate"]
         if source != Path("workflow.py"):
             generate_command.extend(["--workflow-file", source.as_posix()])
         if pipeline_config != Path("omniship.yaml"):
@@ -744,11 +761,13 @@ class GitHubActionsGenerator:
         generate_command.append("--check")
 
         def setup_steps() -> list[dict[str, object]]:
-            return [
+            steps: list[dict[str, object]] = [
                 {"uses": action_lock.reference("checkout")},
                 {"uses": action_lock.reference("setup-uv")},
-                {"run": "uv sync --all-groups --locked"},
             ]
+            if actions.bootstrap == GitHubBootstrap.WORKSPACE:
+                steps.append({"run": "uv sync --all-groups --locked"})
+            return steps
 
         def prepare_job() -> dict[str, object]:
             return {
@@ -993,9 +1012,7 @@ class GitHubActionsGenerator:
                         }
                     )
                 command = [
-                    "uv",
-                    "run",
-                    "omniship",
+                    *omniship_command,
                     "run-node",
                     "--stage",
                     stage.value,

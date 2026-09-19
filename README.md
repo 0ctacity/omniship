@@ -282,6 +282,23 @@ github = GitHubActions(
 )
 ```
 
+Generated jobs run the OmniShip version recorded in `omniship.lock` as an
+isolated `uvx` tool. The target repository does not need to be a Python or uv
+project; its language dependencies are installed by task requirements and
+blocks.
+
+OmniShip itself uses the checked-out source instead of the published package:
+
+```python
+from omniship.plugins.github import GitHubActions, GitHubBootstrap
+
+github = GitHubActions(bootstrap=GitHubBootstrap.WORKSPACE)
+```
+
+Workspace bootstrap runs `uv sync --all-groups --locked` and then invokes
+`uv run omniship`. Use it only when the repository being delivered is the
+OmniShip Python project that should provide the CLI.
+
 ### Per-task machines
 
 Machine selection belongs to a task, not a stage. A task can run on one runner
@@ -604,8 +621,9 @@ support separated local Build and Ship runs.
 
 - GitHub Actions is the only bundled CI compiler today. The target interface is
   designed for additional provider plugins.
-- Generated GitHub workflows currently assume a uv-managed Python project and
-  install dependencies with `uv sync --all-groups --locked`.
+- Generated GitHub workflows use an isolated, locked OmniShip tool by default.
+  Workspace bootstrap remains available for testing OmniShip from its own
+  checkout.
 - The bundled typed providers cover Python, Node.js, Bun, Go, Rust, Zig,
   portable packaging, GitHub Releases, tags, and Pages. Additional ecosystems
   remain external plugins.

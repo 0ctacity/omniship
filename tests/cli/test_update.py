@@ -56,6 +56,28 @@ def test_update_rejects_an_unknown_dependency(tmp_path: Path) -> None:
     assert "Unknown GitHub Action dependency" in result.output
 
 
+def test_update_refreshes_the_locked_omniship_version(tmp_path: Path) -> None:
+    lock_path = tmp_path / "omniship.lock"
+    original = GitHubActionLock.defaults().with_omniship_version("0.0.9")
+    lock_path.write_text(original.render(), encoding="utf-8")
+
+    result = CliRunner().invoke(
+        cli,
+        [
+            "update",
+            "omniship",
+            "--lock-file",
+            str(lock_path),
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    updated = GitHubActionLock.load(lock_path)
+    assert updated.omniship_version == "0.1.0"
+    assert updated.actions == original.actions
+    assert "Updated omniship to 0.1.0" in result.output
+
+
 def test_update_restores_missing_actions_from_plugin_defaults(
     tmp_path: Path,
     monkeypatch,

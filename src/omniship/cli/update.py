@@ -25,6 +25,8 @@ def update_cmd(dependency: str | None, lock_file: str) -> None:
         lock = GitHubActionLock.defaults()
         if path.is_file():
             current = GitHubActionLock.load(path)
+            if dependency not in {None, "omniship"}:
+                lock = lock.with_omniship_version(current.omniship_version)
             for pin in current.actions.values():
                 expected = lock.actions.get(pin.name)
                 if expected is None or (
@@ -32,7 +34,11 @@ def update_cmd(dependency: str | None, lock_file: str) -> None:
                     and pin.major == expected.major
                 ):
                     lock = lock.with_pin(pin)
-        selected = lock.select(dependency)
+        if dependency == "omniship":
+            selected = ()
+            click.echo(f"Updated omniship to {lock.omniship_version}")
+        else:
+            selected = lock.select(dependency)
         for current in selected:
             updated = resolve_action(current)
             lock = lock.with_pin(updated)

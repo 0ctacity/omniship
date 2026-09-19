@@ -1,8 +1,16 @@
 from omniship import Pipeline
-from omniship.plugins.github import GitHubActions, GitHubRelease, GitHubRunner
+from omniship.plugins.github import (
+    GitHubActions,
+    GitHubBootstrap,
+    GitHubRelease,
+    GitHubRunner,
+)
 from omniship.plugins.python import Pytest, Ruff, Wheel
 
-github = GitHubActions(default_runner=GitHubRunner.UBUNTU_24_04)
+github = GitHubActions(
+    bootstrap=GitHubBootstrap.WORKSPACE,
+    default_runner=GitHubRunner.UBUNTU_24_04,
+)
 pipeline = Pipeline(targets=[github])
 
 

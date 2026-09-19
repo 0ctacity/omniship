@@ -9,6 +9,7 @@ from omniship.core.execution import CacheSpec, SecretRef
 from omniship.plugins.github import (
     GitHubActions,
     GitHubBooleanInput,
+    GitHubBootstrap,
     GitHubPermission,
     GitHubPermissions,
     GitHubPullRequest,
@@ -23,6 +24,55 @@ from omniship.plugins.github import (
 from omniship.plugins.github.actions import GitHubActionsGenerator
 from omniship.plugins.registry import PluginRegistry
 from omniship.workflow.model import Pipeline
+
+
+def _generated_check_document(
+    tmp_path: Path,
+    actions: GitHubActions,
+) -> dict[str, object]:
+    config = OmniShipConfig(
+        version=1,
+        check={"verify": NodeConfig(uses="core/noop")},
+    )
+    generated = GitHubActionsGenerator(PluginRegistry()).generate(
+        config,
+        tmp_path / "workflow.py",
+        tmp_path / "omniship.yaml",
+        Pipeline(targets=[actions]),
+    )
+    check_file = next(item for item in generated if item.path.name == "check.yml")
+    return yaml.safe_load(check_file.content)
+
+
+def test_github_actions_bootstraps_omniship_as_an_isolated_tool_by_default(
+    tmp_path: Path,
+) -> None:
+    document = _generated_check_document(tmp_path, GitHubActions())
+
+    prepare_steps = document["jobs"]["prepare"]["steps"]
+    task_steps = document["jobs"]["check-verify"]["steps"]
+
+    assert all(step.get("run") != "uv sync --all-groups --locked" for step in task_steps)
+    assert prepare_steps[-1]["run"].startswith(
+        "uvx --from omniship==0.1.0 omniship generate"
+    )
+    assert task_steps[-1]["run"].startswith(
+        "uvx --from omniship==0.1.0 omniship run-node"
+    )
+
+
+def test_github_actions_can_bootstrap_omniship_from_the_workspace(
+    tmp_path: Path,
+) -> None:
+    document = _generated_check_document(
+        tmp_path,
+        GitHubActions(bootstrap=GitHubBootstrap.WORKSPACE),
+    )
+
+    task_steps = document["jobs"]["check-verify"]["steps"]
+
+    assert {"run": "uv sync --all-groups --locked"} in task_steps
+    assert task_steps[-1]["run"].startswith("uv run omniship run-node")
 
 
 def test_github_runner_contains_every_standard_hosted_label() -> None:
@@ -206,7 +256,7 @@ def test_github_generator_provisions_task_requirements_before_execution(
     document = yaml.safe_load(check_file.content)
     steps = document["jobs"]["check-verify"]["steps"]
 
-    assert steps[3] == {
+    assert steps[2] == {
         "name": "Set up example toolchain",
         "run": "setup-example 1.2.3",
     }
